@@ -1,0 +1,13 @@
+[tool.uv.workspace]
+members = [
+    "shared/contracts",
+    "orthros/control-plane",
+    "orthros/nsm",
+    "echidna",
+    "estigia",
+    "caronte",
+    "hades",
+    "hermes",
+    "hecate",
+    "tenaro",
+]

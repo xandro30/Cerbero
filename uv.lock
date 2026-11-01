@@ -1,0 +1,67 @@
+version = 1
+revision = 5
+requires-python = ">=3.15"
+
+[manifest]
+members = [
+    "cerbero-caronte",
+    "cerbero-contracts",
+    "cerbero-echidna",
+    "cerbero-estigia",
+    "cerbero-hades",
+    "cerbero-hecate",
+    "cerbero-hermes",
+    "cerbero-orthros-control-plane",
+    "cerbero-orthros-nsm",
+    "cerbero-tenaro",
+]
+
+[[package]]
+name = "cerbero-caronte"
+version = "0.1.0"
+source = { editable = "caronte" }
+
+[[package]]
+name = "cerbero-contracts"
+version = "0.1.0"
+source = { editable = "shared/contracts" }
+
+[[package]]
+name = "cerbero-echidna"
+version = "0.1.0"
+source = { editable = "echidna" }
+
+[[package]]
+name = "cerbero-estigia"
+version = "0.1.0"
+source = { editable = "estigia" }
+
+[[package]]
+name = "cerbero-hades"
+version = "0.1.0"
+source = { editable = "hades" }
+
+[[package]]
+name = "cerbero-hecate"
+version = "0.1.0"
+source = { editable = "hecate" }
+
+[[package]]
+name = "cerbero-hermes"
+version = "0.1.0"
+source = { editable = "hermes" }
+
+[[package]]
+name = "cerbero-orthros-control-plane"
+version = "0.1.0"
+source = { editable = "orthros/control-plane" }
+
+[[package]]
+name = "cerbero-orthros-nsm"
+version = "0.1.0"
+source = { editable = "orthros/nsm" }
+
+[[package]]
+name = "cerbero-tenaro"
+version = "0.1.0"
+source = { editable = "tenaro" }
