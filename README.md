@@ -57,6 +57,11 @@ Como Cerbero, guardián de las puertas del Inframundo, el sistema en su conjunto
         │          HÉCATE           │  ◀── secretos, certificados y firma de la auditoría
         │   (Secretos y claves)     │      para todos los proyectos (red interna, mTLS)
         └───────────────────────────┘
+
+        ┌───────────────────────────┐
+        │          TÉNARO           │  ◀── personas (passkeys); única superficie pública.
+        │  (Entrada a Cerbero, UI)  │      Reúne las vistas y pasa las acciones a cada proyecto
+        └───────────────────────────┘
 ```
 
 | Proyecto | Rol SecOps | Hace | No hace |
@@ -146,7 +151,7 @@ Como Cerbero, guardián de las puertas del Inframundo, el sistema en su conjunto
 
 * **Responsabilidades:**
   * **Casos:** agrupación de las Alertas de una regla sobre la misma entidad, durante una ventana de tiempo.
-  * **Playbooks:** cada regla declara el suyo. Describen en YAML cómo se investiga, se actúa y se cierra el caso, y se versionan como las reglas. Hablan con los demás componentes con los mismos verbos (consultar, cambiar, encargar y recoger, avisar).
+  * **Playbooks:** cada regla declara el suyo. Describen en YAML cómo se investiga, se actúa y se cierra el caso, y se versionan como las reglas. Hablan con los demás componentes con los mismos verbos (consultar, cambiar, encargar y recoger, mandar sin seguimiento y emitir señales).
   * **Integraciones:** código propio para lo que no se resuelve con parámetros, que extiende las librerías de Hermes sin sobrescribirlas.
   * **Investigación:** enriquecimiento del caso consultando a Estigia (activo, segmento, historial de eventos) y a servicios externos, normalmente a través de Hermes.
   * **Aprobación humana:** pasos que esperan la respuesta del propietario por el canal (por ejemplo, aprobar el bloqueo de un dispositivo).
@@ -178,7 +183,7 @@ Como Cerbero, guardián de las puertas del Inframundo, el sistema en su conjunto
 * **Responsabilidades:**
   * **Secretos de terceros:** cifrados por capas, con versiones, rotación y borrado criptográfico. Cada proyecto solo lee los suyos.
   * **Identidad de los proyectos:** una CA interna que emite certificados de pocos días para que se hablen entre sí con mTLS.
-  * **Arranque seguro:** arranca sellada y se desbloquea con la frase del propietario; si se olvida, se recupera con partes repartidas (Shamir).
+  * **Arranque seguro:** arranca sellada y se desbloquea con la frase del admin; si se olvida, se recupera con partes repartidas (Shamir).
   * **Auditoría a prueba de manipulación:** firma los registros de todos los proyectos, para que nadie pueda reescribir lo que pasó.
 
 ### 8. 🕳️ TÉNARO — La entrada a Cerbero
@@ -190,7 +195,7 @@ Como Cerbero, guardián de las puertas del Inframundo, el sistema en su conjunto
 
 ## ❓ Decisiones Abiertas
 
-Las decisiones de diseño y tecnología pendientes se registran en [DECISIONS.md](DECISIONS.md). La correlación entre dominios (red + físico) queda fuera de alcance por ahora.
+Las decisiones de diseño y tecnología pendientes se registran en [DECISIONS.md](DECISIONS.md). La correlación entre dominios (red + físico) queda fuera de alcance.
 
 ---
 
@@ -231,12 +236,12 @@ La visión transversal está en [ARCHITECTURE.md](ARCHITECTURE.md), y el detalle
 - [x] Diseño conceptual de **Hades** (Casos, Playbooks, Verdict, eventos, comandos).
 - [x] Diseño conceptual de **Hermes** (contratos por tipología, librerías de proveedor, tasks, comunicación).
 - [x] Diseño conceptual de **Hécate** (secretos, claves, identidad de los proyectos, auditoría).
-- [ ] Diseño conceptual de **Echidna**.
-- [ ] Diseño del esquema **UDM** en Estigia.
 - [x] Documentación por componente en `docs/`.
+
+Lo pendiente de diseño (Echidna, esquema UDM) está en [DECISIONS](DECISIONS.md#abiertas).
 
 ---
 
 ## 🛡️ Licencia
 
-Proyecto personal de ciberseguridad doméstica y código abierto para entornos *Home Lab*.
+Proyecto personal de ciberseguridad doméstica para entornos *Home Lab*, publicado bajo la [GNU Affero General Public License v3.0 o posterior](LICENSE) (`AGPL-3.0-or-later`). Quien modifique Cerbero y lo ofrezca a otros, también como servicio por red, debe publicar su código con la misma licencia.

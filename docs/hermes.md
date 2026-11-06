@@ -28,7 +28,9 @@ Hermes reúne las librerías que envuelven servicios de terceros (mensajería, t
 flowchart LR
     Hades -- "hermes.query / command / submit / dispatch" --> Hermes
     Hades -- "submit.result / awaiting (consulta de tasks)" --> Hermes
-    Tenaro[Ténaro] -- "gestión: instancias, contactos, plantillas" --> Hermes
+    Tenaro[Ténaro] -- "PR: instancias, plantillas, librerías propias" --> Repo[(Repositorio privado)]
+    Tenaro -- "contactos y valores de variables de las plantillas" --> Hermes
+    Repo -- "configuración propia" --> Hermes
     Hermes -- "API de cada proveedor (polling)" --> Proveedores[Telegram, Jira, VirusTotal...]
     Hermes -- "secretos de instancias, identidad, firma de checkpoints" --> Hecate[Hécate]
 ```
@@ -36,7 +38,8 @@ flowchart LR
 | Con quién | Qué recibe Hermes | Qué entrega Hermes |
 |---|---|---|
 | **Hades** (Responses, Jobs, cronjobs) | Llamadas síncronas, tasks, consultas de tasks, cancelaciones, `/capabilities` | El sobre común con los datos del contrato; el estado de las tasks |
-| **Ténaro** | Gestión de instancias, contactos, plantillas; prueba de conexión | Estado de instancias y librerías |
+| **Ténaro** | Prueba de conexión de una instancia (los cambios de configuración van por PR al repositorio privado) | Estado de instancias y librerías |
+| **Repositorio privado** | Lo propio: instancias, plantillas y librerías de proveedor propias (sin secretos, contactos ni valores de variables) | — |
 | **Proveedores** | Sus respuestas (y lo que llega en las tasks, por polling) | Las llamadas traducidas a su API |
 | **Hécate** | Secretos de las instancias, certificado, firma de checkpoints | — |
 
@@ -226,7 +229,8 @@ Cada función declara su timeout técnico: segundos en las síncronas, duración
 | `POST /{service}/v1/tasks` · `GET` · `DELETE /{service}/v1/tasks/{id}` | Enviar, consultar y cancelar una task |
 | `GET /capabilities` | Por tipo de servicio: proveedores, instancias, funciones de cada uno y su estado |
 | `POST /instances/{id}/test` | Prueba de conexión de una instancia |
-| Gestión (desde Ténaro) | Instancias, contactos, plantillas |
+| Configuración propia | Instancias, plantillas y librerías propias, cargadas del repositorio privado (se editan desde Ténaro con una PR) |
+| Contactos y variables | Contactos y valores de las variables de las plantillas, en la base de datos de Hermes (gestión desde Ténaro) |
 | `/health/live`, `/health/ready` | Salud |
 
 - **Formato:** contratos en JSON Schema; API publicada en OpenAPI 3.1, de la que se generan los clientes de Hades.
@@ -238,7 +242,7 @@ Cada función declara su timeout técnico: segundos en las síncronas, duración
 
 ### Añadir un proveedor: una librería
 
-Una librería implementa uno o varios tipos de servicio para un proveedor. Es código de Hermes: se añade por PR con CI y se despliega con Hermes.
+Una librería implementa uno o varios tipos de servicio para un proveedor. Las oficiales son código de Hermes en el repositorio de Cerbero: se añaden por PR con CI, siguen las convenciones de calidad y de API Contracts, y se despliegan con Hermes. Las propias viven en el repositorio privado (ruta `hermes/`) y llegan por una PR desde Ténaro que pasa su batería de pruebas.
 
 ```text
 infrastructure/providers/telegram/
@@ -276,7 +280,7 @@ infrastructure/providers/telegram/
 
 ### Instancias
 
-Se configuran desde Ténaro: parámetros y referencias `secret://hermes/...`. Al registrarlas, Hécate da a Hermes permiso de lectura sobre esas rutas. La prueba de conexión confirma que las credenciales funcionan.
+Viven en el repositorio privado y se editan desde Ténaro con una PR: parámetros y referencias `secret://hermes/...`. Al registrarlas, Hécate da a Hermes permiso de lectura sobre esas rutas. La prueba de conexión confirma que las credenciales funcionan.
 
 ### Comunicación: contactos y plantillas
 
@@ -322,13 +326,14 @@ hermes/
 |---|---|---|
 | Registro append-only de llamadas con `side_effect` o `discloses_data` | Base de datos de Hermes | Sí, lo más importante (auditoría) |
 | Event store de las tasks y claves de idempotencia | Base de datos de Hermes | Sí |
-| Contactos, grupos y canales verificados | Base de datos de Hermes | Sí, solo dentro de la copia de la base de datos |
-| Instancias y plantillas | Repositorio privado de configuración, como código (sin secretos) | Es el propio repositorio |
+| Instancias, plantillas y librerías propias | Repositorio privado (ruta `hermes/`), como código, sin secretos, contactos ni valores de variables; se cambian por PR desde Ténaro | Es el propio repositorio |
+| Contactos, grupos y valores de las variables de las plantillas | Base de datos de Hermes; se gestionan desde Ténaro; nunca en el repositorio | Sí, dentro de la copia de la base de datos |
+| Estado de verificación de los canales | Base de datos de Hermes | Sí |
 | Proyecciones, cachés, cursores del polling | — | No: se reconstruyen o se empieza desde "ahora" |
-| Código, contratos y manifiestos de las librerías | Repositorio de Cerbero | Es el propio repositorio |
+| Código, contratos y manifiestos de las librerías oficiales | Repositorio de Cerbero; no se editan desde Ténaro | Es el propio repositorio |
 
 - **Retención** configurable de las tasks terminadas (30 días como punto de partida); el resultado queda también en el stream de la Response de Hades.
-- **Datos personales:** las direcciones de los contactos solo viven en Hermes.
+- **Datos personales:** las direcciones de los contactos solo viven en la base de datos de Hermes; nunca en el repositorio ni en Hades.
 - **Copias:** regla 3-2-1, cifradas con una clave de Hécate (`wrap`), restauración probada.
 
 ---

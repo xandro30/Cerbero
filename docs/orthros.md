@@ -17,6 +17,7 @@ Orthros vigila el dominio digital de la casa con sus dos cabezas: una mira **des
 | Analizar el tráfico de toda la red (NSM) | Enviar Raw Logs ni paquetes: solo viajan UDM Events |
 | Filtrar, agregar y parsear a UDM en el borde | Reprocesar lo que no se parseó en su momento |
 | Observar desde la red los equipos sin agente (móviles) | |
+| Publicar en Estigia los hechos de salud del Fleet (control plane) | |
 
 **Por qué es una pieza aparte (y la diferencia con SecOps):** las cabezas producen UDM de forma nativa en lugar de delegar el parseo a la plataforma. Reducir en origen ahorra red y almacenamiento, y deja el dato normalizado desde el principio.
 
@@ -29,13 +30,14 @@ flowchart LR
     CP["Control plane"] -- "Policy firmada (pull en cada heartbeat)" --> Eu["Eurytion (en cada equipo)"]
     Eu -- "heartbeat: versión de Policy, descartes, fallos de parseo" --> CP
     Eu -- "UDM Events" --> Estigia
+    CP -- "salud del Fleet (UDM Events)" --> Estigia
     NSM["NSM (servidor central)"] -- "UDM Events (flujos, DNS, sesiones)" --> Estigia
     Red[Tráfico de la red] -- "port mirroring / tap" --> NSM
 ```
 
 | Pieza | Qué recibe | Qué entrega |
 |---|---|---|
-| **Control plane** | Heartbeats de los Eurytion | Policies firmadas por Profile |
+| **Control plane** | Heartbeats de los Eurytion | Policies firmadas por Profile; hechos de salud del Fleet a Estigia (UDM Events) |
 | **Eurytion** | Su Policy; lo que observan sus Sensors | UDM Events a Estigia; heartbeat al control plane |
 | **NSM** | Una copia del tráfico de la red | UDM Events a Estigia |
 
@@ -74,7 +76,8 @@ Profile "macOS" → Policy v7 (firmada):  ─pull─▶  Sensors según Flags
         ◀── heartbeat: "aplico v7, descartados N" ──      └──▶ ESTIGIA (directo)
 ```
 
-- **El control plane no está en el camino de los datos:** los Eurytion envían directamente a Estigia.
+- **El control plane no está en el camino de los datos:** los Eurytion envían directamente a Estigia. Lo único que publica el control plane en Estigia son los hechos de salud del Fleet.
+- **Salud del Fleet:** el control plane recibe los heartbeats y publica en Estigia, como UDM Events, lo que observa: un agente silencioso (sin heartbeat durante un plazo configurable), el resumen de descartes por Filter y de fallos de parseo de cada heartbeat, y el drift. Publica hechos, no juicios: si un descarte es anómalo lo decide una Rule de Caronte.
 - **Las Policies son datos, no código:** cambiar un Filter, un Parser o un Flag no exige redesplegar los Eurytion.
 - **Versionadas y firmadas:** Eurytion rechaza las que no reconoce.
 - **Pull:** Eurytion pregunta por la Policy nueva en cada heartbeat. Funciona detrás de NAT y en equipos que se apagan.
@@ -143,6 +146,7 @@ iOS no permite observar otros procesos ni conexiones del sistema, y Android lo l
 - **Salida:** UDM Events según el [contrato UDM](../ARCHITECTURE.md#4-contrato-udm), con `event_id` determinista derivado del origen (p. ej. `hash(agent_id + secuencia en origen)`), para que Estigia descarte duplicados.
 - **Policy:** documento versionado y firmado por Profile (Flags, Filters, Aggregations, Parsers declarativos).
 - **Heartbeat:** vida, versión de Policy aplicada, descartes por Filter y fallos de parseo.
+- **Salud del Fleet:** UDM Events del control plane según el contrato UDM: agente silencioso, resumen de descartes y fallos de parseo por heartbeat, drift.
 
 ---
 
@@ -178,7 +182,7 @@ iOS no permite observar otros procesos ni conexiones del sistema, y Android lo l
 Un Filter centralizado es también un mecanismo para cegar al sistema (MITRE T1562, *Impair Defenses*):
 
 - **Las Policies van firmadas**, y Eurytion rechaza las que no reconoce.
-- **El heartbeat informa de cuánto descarta cada Filter.** Un descarte anómalo, o un Eurytion que deja de latir, es en sí mismo un UDM Event que Caronte puede vigilar.
+- **El heartbeat informa de cuánto descarta cada Filter**, y el control plane publica en Estigia ese resumen y el silencio de un Eurytion como UDM Events. Caronte los vigila con Rules: un descarte anómalo o un agente que deja de latir genera una Detection.
 - Los componentes de Orthros se comunican con el resto de Cerbero con la identidad común (ver [Identidad y seguridad](../ARCHITECTURE.md#6-identidad-y-seguridad)).
 
 ---
@@ -187,8 +191,8 @@ Un Filter centralizado es también un mecanismo para cegar al sistema (MITRE T15
 
 | Qué falla | Efecto | Recuperación |
 |---|---|---|
-| Control plane | Los Eurytion siguen con la última Policy aplicada; no hay cambios de Policy ni enrollment | Recogen la Policy pendiente en el siguiente heartbeat |
-| Un Eurytion | No llegan eventos de ese equipo; la falta de heartbeat es en sí misma una señal | Reanuda y vacía su buffer |
+| Control plane | Los Eurytion siguen con la última Policy aplicada; no hay cambios de Policy ni enrollment, ni se publica la salud del Fleet | Recogen la Policy pendiente en el siguiente heartbeat; el control plane publica los silencios que encuentre al volver |
+| Un Eurytion | No llegan eventos de ese equipo; el control plane publica su silencio como UDM Event | Reanuda y vacía su buffer |
 | NSM | Se pierde la visión de la red completa; los Eurytion siguen | Reanuda la observación |
 | Estigia | Los Eurytion acumulan en su buffer local | Reenvían al volver |
 

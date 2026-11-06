@@ -43,9 +43,9 @@ flowchart LR
 | **Estigia** | Detalle de la Detection, contexto de las entidades *as-of*, eventos | Comandos de contexto (trust level, anotaciones) y filas de Data Tables |
 | **Hermes** | Resultados de llamadas síncronas y estado de tasks | Peticiones a servicios de terceros con contrato (chat, ticketing, threat intel...) |
 | **Hécate** | Secretos de sus integraciones, certificados, firma de checkpoints | — (Hécate nunca llama a nadie) |
-| **Ténaro** | Gestión (Playbooks, integraciones), acciones manuales | Vistas: Cases, timelines, salud de los Playbooks, eventos |
+| **Ténaro** | Acciones manuales (Playbooks e integraciones propios se cambian por PR al repositorio privado) | Vistas: Cases, timelines, salud de los Playbooks, eventos |
 
-Hades habla con los demás componentes por API, con el contrato común de Cerbero (ver [ARCHITECTURE](../ARCHITECTURE.md#3-comunicación-entre-proyectos)). Nunca escucha el pub/sub de otro componente: consulta.
+Hades habla con los demás componentes por API, con el contrato común de Cerbero (ver [ARCHITECTURE](../ARCHITECTURE.md#3-comunicación-entre-proyectos)). Salvo las Alerts y `DETECTION_INVALIDATED` de Caronte, que consume como eventos de integración, nunca escucha el pub/sub de otro componente: consulta.
 
 ---
 
@@ -139,10 +139,13 @@ stateDiagram-v2
     intervention --> awaiting: espera a terceros
     awaiting --> intervention
     intervention --> closed: close_case(verdict)
+    triage --> closed: close_case(verdict)
+    investigation --> closed: close_case(verdict)
     triage --> error
     investigation --> error
     intervention --> error
     error --> closed: cerrar el Case
+    note right of error: relanzar vuelve al stage del paso fallido
     closed --> [*]
 ```
 
@@ -169,7 +172,7 @@ sequenceDiagram
     participant E as Estigia
     participant M as Hermes
     participant P as Propietario
-    C->>H: Alert (rule unknown_device, grouping_key = MAC)
+    C->>H: Alert (rule unknown_device, grouping_key = entity_id)
     H->>H: agrupar: abre Case y arranca la Response (triage)
     H->>E: estigia.query ip_history
     H->>M: hermes.query threat_intel.ip_reputation
@@ -342,14 +345,14 @@ Mismo sobre, mismos errores y misma versión en la ruta que el resto de componen
 
 | Tipo | Trigger | Estructura |
 |---|---|---|
-| **Principal** | La Rule, por su label `playbook` | Obligatorio `open_case → triage → intervention → close_case`. Solo él abre, corta y cierra el Case |
+| **Principal** | La Rule, por su label `playbook` | Empieza con `open_case` y todo camino termina en un `close_case`. Los stages (`triage`, `investigation`, `intervention`) los declara cada camino y son opcionales; el corte de entrada solo ocurre si se entra en `intervention`. Solo él abre, corta y cierra el Case |
 | **Secundario** | Un evento de Hades (suscripción con filtro) | Solo `trigger` y bloques. Actúa sobre el Case existente sin abrirlo ni cerrarlo |
 
 - **Formato:** JSON Schema como formato oficial, escrito en YAML, validado al registrar. El diagrama se genera del documento. Expresiones con `${...}`.
 - **Estructura:** `flow:` es la línea principal, en orden; `paths:` son caminos con nombre definidos aparte, como los objetos referenciados de OpenAPI. Cada camino declara su `stage:`. `condition` y `switch` apuntan a caminos por nombre; al terminar un camino se vuelve al bloque siguiente del que lo llamó, salvo que acabe en `close_case`.
 - **Bucles:** un único bloque `loop` con el cuerpo como camino; no hay saltos arbitrarios. `while` y `do_while` exigen `max_iterations`, salvo que el cuerpo espere a terceros.
 - **Versionado:** semver, `0.1.0` en desarrollo y `1.0.0` al pasar a producción. Major = cambia el contrato (trigger, eventos emitidos o escuchados). La Rule referencia `nombre:latest` o `nombre:1.2.0` y la Response fija la versión al arrancar.
-- **Validaciones al registrar:** contratos y referencias, estructura del principal, `max_iterations`, valores literales de Verdict, grafo de triggers sin ciclos, verbo coherente con su función y uso de cada `handle`. Avisos que no bloquean: funciones con `discloses_data`, señales sin `reason`, suscripciones sin `purpose` y versiones deprecadas.
+- **Validaciones al registrar:** contratos y referencias, estructura del principal (empieza con `open_case` y todo camino termina en `close_case`), `max_iterations`, valores literales de Verdict, grafo de triggers sin ciclos, verbo coherente con su función y uso de cada `handle`. Avisos que no bloquean: funciones con `discloses_data`, señales sin `reason`, suscripciones sin `purpose` y versiones deprecadas.
 
 ### Integraciones
 
@@ -384,7 +387,7 @@ Una integración es código Python con un manifiesto JSON, para lo que no se res
 | Actions | Código que hace una cosa (SRP) | API Contract (entradas y salidas) |
 | Jobs / cronjobs | Código fuera de los Playbooks, a mano o por evento; el cronjob, por calendario | Entradas y side effects, con compensación o `non_reversible` |
 
-- **Nuestras y propias:** las nuestras vienen con Hades y son de solo lectura; una propia importa lo que exponen sin copiarlo.
+- **Nuestras y propias:** las nuestras vienen con Hades, en el repositorio de Cerbero, y son de solo lectura; una propia importa lo que exponen sin copiarlo. Las propias, como los Playbooks, viven en el repositorio privado (ruta `hades/`) y se cambian con una PR desde Ténaro que pasa su batería de pruebas.
 - **Versionado:** semver; el bloque referencia `integración@major.action` y la Response fija la versión exacta.
 - **Deprecación:** una versión `deprecated` lleva mensaje y sustituta, avisa sin bloquear y emite `VersionDeprecated`; no se retira mientras algo la use. Mismo patrón para los Playbooks.
 - **SDK de integraciones:** clases base de Action, Job y cronjob, clientes tipados de los componentes (generados de su OpenAPI), acceso a `env`, logging estructurado y propagación de idempotencia y de `correlation_id` / `causation_id`. Los Jobs no usan `awaiting`: consultan el estado de sus tasks con el SDK.
@@ -425,7 +428,9 @@ hades/
 | Streams de Alert, Case, Playbook y Response | Event store de Hades | Append-only, con cadena de hashes |
 | Soporte de agrupación (`grouping/...`) | Event store | Concurrencia optimista |
 | Proyecciones | Store de lectura | Reconstruibles desde el event store |
-| Definiciones de Playbooks e integraciones | Hades, versionadas | Hades es su fuente de verdad |
+| Playbooks e integraciones propios | Repositorio privado (ruta `hades/`), versionados | Se cambian por PR desde Ténaro; Hades los carga |
+| Integraciones oficiales | Repositorio de Cerbero, con Hades | De solo lectura |
+| Valores de las variables de Playbooks e integraciones (`env`) | Base de datos de Hades; se gestionan desde Ténaro | Nunca en el repositorio |
 | Resultados de los bloques | Stream de la Response | El resultado de Hermes queda aquí aunque Hermes lo archive |
 
 **Proyecciones**, con la convención `{sujeto}-{tipo}` (`-timeline` = historia de una instancia; `-health` = métricas sobre muchas):
@@ -436,7 +441,7 @@ hades/
 
 **Datos personales:** Hades solo guarda referencias a contactos; las direcciones viven en Hermes.
 
-**Copias de seguridad:** el event store y las definiciones (Playbooks e integraciones), con la regla 3-2-1 y restauración probada; las proyecciones no se copian.
+**Copias de seguridad:** el event store, con la regla 3-2-1 y restauración probada; los Playbooks e integraciones propios se respaldan con el repositorio privado; las proyecciones no se copian.
 
 ---
 

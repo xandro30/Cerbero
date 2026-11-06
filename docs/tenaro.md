@@ -15,7 +15,7 @@ Ténaro es el backend de Cerbero para la UI (*backend for frontend*): la única 
 | Autenticar a las personas con passkeys | Detectar, decidir ni orquestar: cada componente conserva su responsabilidad |
 | Orquestar la UI: reunir lo que cada componente expone | Guardar los datos de los componentes: los consulta |
 | Pasar a cada componente las acciones de gestión y las manuales, con la persona en el contexto | Exponer los componentes a internet: es la única superficie pública |
-| Desbloquear Hécate con el owner | |
+| Desbloquear Hécate con el admin | |
 
 **Por qué es una pieza aparte:** los componentes solo hablan entre ellos por la red interna, con mTLS. Ténaro concentra la entrada de las personas, su autenticación y la atribución de lo que hacen, sin que ningún otro componente se exponga.
 
@@ -27,7 +27,7 @@ Ténaro es el backend de Cerbero para la UI (*backend for frontend*): la única 
 flowchart LR
     Persona -- "passkey (WebAuthn), TLS" --> Tenaro[Ténaro]
     Tenaro -- "vistas y acciones manuales" --> Hades
-    Tenaro -- "instancias, contactos, plantillas" --> Hermes
+    Tenaro -- "contactos, variables de plantillas, prueba de conexión" --> Hermes
     Tenaro -- "secretos, permisos, identidades, desbloqueo" --> Hecate[Hécate]
     Tenaro -- "lo que exponga" --> Estigia
     Tenaro -- "lo que exponga" --> Caronte
@@ -35,8 +35,9 @@ flowchart LR
 
 | Con quién | Qué hace Ténaro |
 |---|---|
-| **Hades** | Vistas (Cases, `case-timeline`, `playbook-health`, `event-log`), gestión de Playbooks e integraciones, acciones manuales (lanzar una Response, corregir un Verdict, relanzar) |
-| **Hermes** | Gestión de instancias (con su prueba de conexión), contactos y plantillas; ver librerías y su estado |
+| **Hades** | Vistas (Cases, `case-timeline`, `playbook-health`, `event-log`), acciones manuales (lanzar una Response, corregir un Verdict, relanzar), valores de las variables de Playbooks e integraciones |
+| **Hermes** | Contactos y valores de las variables de las plantillas; prueba de conexión de las instancias; ver librerías y su estado |
+| **Repositorio privado** | Editar lo propio de Hades (Playbooks, integraciones) y de Hermes (instancias, plantillas, librerías) abriendo una PR, que pasa una batería de pruebas. Lo oficial vive en el repositorio de Cerbero y no se edita desde aquí |
 | **Hécate** | Gestión de secretos y versiones, permisos, identidades y tokens de alta, rotaciones; desbloquear y sellar |
 | **Estigia, Caronte** | Lo que cada uno exponga a las personas (consultas, Data Tables, Rules) |
 
@@ -48,7 +49,8 @@ flowchart LR
 |---|---|
 | **Usuario** | Una persona con acceso a Cerbero. Los usuarios viven en Ténaro |
 | **Passkey** | Credencial sin contraseña (WebAuthn), resistente al phishing; Ténaro solo guarda la clave pública |
-| **Owner / maintainer** | Los que declaran las definiciones (Playbooks, integraciones, Jobs, librerías). Sin permisos por rol en Ténaro |
+| **Admin** | El único usuario privilegiado: inicializa, desbloquea y sella Hécate, gestiona secretos, identidades y tokens de alta, invita a las personas y tiene códigos de recuperación |
+| **Owner / maintainer** | Los que declaran las definiciones (Playbooks, integraciones, Jobs, librerías). No son un rol de Ténaro |
 
 ---
 
@@ -58,7 +60,7 @@ flowchart LR
 
 ```mermaid
 sequenceDiagram
-    participant O as Owner
+    participant O as Admin
     participant T as Ténaro
     participant N as Persona nueva
     O->>T: invitar a una persona
@@ -70,7 +72,7 @@ sequenceDiagram
 ```
 
 - **Alta por invitación** con un enlace de un solo uso (el mismo patrón que la verificación de un canal en Hermes).
-- **Recuperación:** como mínimo dos dispositivos por persona, o códigos de recuperación para el owner.
+- **Recuperación:** como mínimo dos dispositivos por persona, o códigos de recuperación para el admin.
 - **VPN delante** (WireGuard o Tailscale) si no se quiere exponer Ténaro a internet.
 
 ### Actuar en nombre de una persona
@@ -79,7 +81,7 @@ Cuando una persona hace algo (gestionar, lanzar una Response, corregir un Verdic
 
 ### Desbloquear Hécate
 
-Tras un reinicio, Hécate queda sellada y Ténaro lo muestra. El owner entra con su passkey y escribe la frase, que viaja por mTLS a Hécate. Los certificados duran días, así que Ténaro sigue funcionando aunque Hécate esté sellada.
+Tras un reinicio, Hécate queda sellada y Ténaro lo muestra. El admin entra con su passkey y escribe la frase, que viaja por mTLS a Hécate. Los certificados duran días, así que Ténaro sigue funcionando aunque Hécate esté sellada.
 
 ---
 
@@ -111,7 +113,7 @@ Usuarios y sus claves públicas de passkey. El resto de datos los consulta a cad
 
 - **Única superficie pública** de Cerbero, tras un proxy inverso con TLS.
 - **Identidad propia** (`spiffe://cerbero.home/tenaro`), con mTLS y JWT ligado al canal hacia los componentes.
-- **Sin permisos por rol:** owner y maintainer salen de las definiciones; cada modificación queda registrada con quién la hizo.
+- **Un solo rol privilegiado, el admin** (Hécate, identidades, invitaciones). Fuera de eso, sin permisos por rol: owner y maintainer salen de las definiciones y cada modificación queda registrada con quién la hizo.
 
 ---
 
@@ -142,7 +144,7 @@ En [DECISIONS](../DECISIONS.md): passkeys en lugar de un IdP con OIDC; Ténaro c
 Las passkeys resisten el phishing y Ténaro solo guarda la clave pública: no hay contraseñas que robar.
 
 **¿Qué pasa si pierdo el móvil con la passkey?**
-Se entra con el segundo dispositivo registrado o, en el caso del owner, con un código de recuperación.
+Se entra con el segundo dispositivo registrado o, en el caso del admin, con un código de recuperación.
 
 **¿Puedo entrar desde fuera de casa?**
 Sí, si Ténaro está expuesto tras el proxy con TLS, o a través de la VPN si se prefiere no exponerlo.

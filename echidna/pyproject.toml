@@ -2,6 +2,7 @@
 name = "cerbero-echidna"
 version = "0.1.0"
 description = "Echidna: SIEM físico y domótico"
+license = "AGPL-3.0-or-later"
 authors = [
     { name = "Alejandro Anguita", email = "anguitaalex@gmail.com" }
 ]

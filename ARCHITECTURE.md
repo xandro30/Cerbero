@@ -8,7 +8,7 @@ Ver también: [README](README.md) (visión funcional) · [GLOSSARY](GLOSSARY.md)
 
 ## 1. Principios
 
-1. **Independencia real.** Cada proyecto (Orthros, Echidna, Estigia, Caronte, Hades, Hermes, Hécate) se despliega, arranca y evoluciona por separado. Activar o desactivar uno no obliga a modificar los demás.
+1. **Independencia real.** Cada proyecto (Orthros, Echidna, Estigia, Caronte, Hades, Hermes, Hécate, Ténaro) se despliega, arranca y evoluciona por separado. Activar o desactivar uno no obliga a modificar los demás.
 2. **Solo se comparte el contrato, nunca el dominio.** Lo único común entre proyectos es el lenguaje publicado: el esquema UDM y los mensajes de integración. No hay código de dominio compartido entre bounded contexts.
 3. **Comunicación asíncrona en el camino principal.** El flujo `Orthros/Echidna → Estigia → Caronte → Hades` se basa en eventos. Ningún proyecto bloquea su trabajo esperando a otro. Lo que Hades pide a otros componentes (Estigia, Caronte, Hermes) va por API, síncrona o como task que se consulta después.
 4. **Degradación elegante.** Si un proyecto cae, los demás siguen trabajando con lo que tienen y se ponen al día cuando vuelve.
@@ -70,14 +70,14 @@ Reglas:
 - **Productores fiables:** quien publica eventos tras cambiar su estado usa **Transactional Outbox**. Así no se pierde un evento ni se publica uno sin haber persistido.
 - **Consumidores idempotentes:** todo consumidor tolera duplicados y reentregas.
 - **Buffer en las cabezas:** si Estigia no está disponible, las cabezas acumulan localmente y reenvían al volver.
-- **Contrato común de las APIs internas** (Estigia, Caronte, Hades, Hermes, Hécate): misma estructura de respuesta y mismos códigos de error; cada componente publica sus API Contracts (OpenAPI) y su `/capabilities`; la versión mayor va en la ruta; las peticiones con efecto llevan la cabecera `Idempotency-Key`. Hades los usa con los mismos verbos (ver [los contratos de Hades](docs/hades.md#5-contratos)).
+- **Contrato común de las APIs internas** (todas, sin excepciones; si un componente necesita algo que no cubre, se revisa el contrato): misma estructura de respuesta y mismos códigos de error; cada componente publica sus API Contracts (OpenAPI) y su `/capabilities`; la versión mayor va en la ruta; las peticiones con efecto llevan la cabecera `Idempotency-Key`. Hades los usa con los mismos verbos (ver [los contratos de Hades](docs/hades.md#5-contratos)).
 - **Eventos ≠ Event Sourcing:** el río de Estigia es un log de eventos de integración (hechos del mundo). Event Sourcing es persistir un aggregate como la secuencia de sus propios eventos de dominio. Los dos conviven, pero no se confunden.
 
 ---
 
 ## 4. Contrato UDM
 
-El esquema UDM es el contrato del que dependen los cinco proyectos.
+El esquema UDM es el contrato del que dependen todos sus productores y consumidores.
 
 - **Dueña:** Estigia define y versiona el esquema.
 - **Distribución:** el esquema se publica como artefacto versionado que consumen productores y consumidores.
@@ -112,8 +112,9 @@ Regla de dependencia: `infrastructure → application → domain`. El dominio no
 | **Estigia** | Ingesta, entidades y búsqueda | Fuerte en entidades (Asset, identificadores, resolución) | **Sí** | No |
 | **Caronte** | Motor de reglas | Medio: Rule, Rule Deployment, Detection, Alert | No | No |
 | **Hades** | Flujo de trabajo con estado | **Fuerte**: Alert, Case, Playbook, Response | **Sí** | **Sí** (los cuatro aggregates) |
-| **Hécate** | Secretos y claves | Medio: Secret, Key, Certificate, Identity, Policy | No | **Sí** (los cinco aggregates y el registro de accesos) |
+| **Hécate** | Secretos y claves | Medio: Secret, Key, Certificate, Identity, Access Policy | No | **Sí** (los cinco aggregates y el registro de accesos) |
 | **Hermes** | Librerías de terceros con contrato | Fuerte en lo común (sobre, contratos, Task, contactos); tipo de servicio = port, proveedor = adapter | **Sí** (Task) | **Sí** (Task) |
+| **Ténaro** | Backend de la UI (BFF) | Sin definir (ver [DECISIONS](DECISIONS.md)) | Sin definir | Sin definir |
 
 ---
 
@@ -121,9 +122,9 @@ Regla de dependencia: `infrastructure → application → domain`. El dominio no
 
 Detalle completo en [docs/orthros.md](docs/orthros.md).
 
-- **Tres piezas:** el **control plane** (Profiles, Policies firmadas y Fleet; fuera del camino de los datos), los **Eurytion** (agentes en cada equipo) y el **NSM** (análisis del tráfico de toda la red). Eurytion y NSM son las dos cabezas.
+- **Tres piezas:** el **control plane** (Profiles, Policies firmadas y Fleet; fuera del camino de los datos, salvo los hechos de salud del Fleet que publica en Estigia), los **Eurytion** (agentes en cada equipo) y el **NSM** (análisis del tráfico de toda la red). Eurytion y NSM son las dos cabezas.
 - **Eurytion:** núcleo fijo y Sensors enchufables (process, connection, dns, network), cada uno con un adapter por sistema operativo; pipeline `sensor → filter / aggregate → parser (→ UDM) → publisher`. Las Policies son datos: llegan por pull en cada heartbeat.
-- **Reducción y parseo en el borde:** solo viajan UDM Events; los Raw Logs y los paquetes nunca salen de origen. Los fallos de parseo y los descartes se cuentan en el heartbeat.
+- **Reducción y parseo en el borde:** solo viajan UDM Events; los Raw Logs y los paquetes nunca salen de origen. Los fallos de parseo y los descartes se cuentan en el heartbeat, y el control plane los publica en Estigia junto con el silencio de un agente.
 - **Frontera:** observa, reduce y parsea; nunca detecta.
 
 ---
@@ -169,7 +170,7 @@ Detalle completo en [docs/hades.md](docs/hades.md).
 
 - **Qué hace:** agrupa las Alerts de Caronte en Cases (`rule_id` + `$grouping_key`, ventana de 7 días), orquesta la respuesta con Playbooks declarativos (una Response por ejecución) y concluye con un Verdict (`true_positive`, `benign_positive`, `false_positive`, `undetermined`).
 - **Modelo:** cuatro aggregates event-sourced (Alert, Case, Playbook, Response); proyecciones por pregunta (`case-timeline`, `playbook-health`, `event-log`).
-- **Flujo de una Response:** `triage` → `investigation` → `intervention` (corte de entrada irreversible) → esperas a terceros → `close_case`.
+- **Flujo de una Response:** `triage` → `investigation` → `intervention` (corte de entrada irreversible) → esperas a terceros → `close_case`; los stages son opcionales y se puede cerrar desde cualquiera.
 - **Habla con los demás** con bloques `destino.verbo` (`query`, `command`, `submit.query`, `submit.command`, `submit.result`, `dispatch`, `signal`) sobre los API Contracts de Estigia, Caronte, Hermes y el propio Hades; la lógica propia va en integraciones (`action`, Jobs, cronjobs).
 - **Eventos de primera clase:** todo se registra, categorizado; los Playbooks secundarios reaccionan a cualquier evento.
 - **Frontera:** no mira el `mode` de la Alert ni guarda secretos.
@@ -183,7 +184,7 @@ Detalle completo en [docs/hermes.md](docs/hermes.md).
 - **Qué hace:** reúne las librerías que envuelven servicios de terceros detrás de contratos estándar por tipología (categoría → tipo de servicio → función → proveedor → instancia). Un Playbook que usa el contrato del tipo de servicio funciona con cualquier proveedor.
 - **Contratos en tres capas,** todas de Hermes: sobre común (con errores cerrados y `retryable`), contrato del tipo de servicio y contrato del proveedor. Cada función declara si es consulta o cambio, su modo nativo (síncrona o task), `side_effect` y `discloses_data`.
 - **Ejecución:** llamadas síncronas y tasks event-sourced que Hades consulta por API; idempotencia por `Idempotency-Key`, reintentos solo cuando es seguro, polling hacia los proveedores.
-- **Librerías de proveedor** como código de Hermes (manifiesto, contrato, adapter, polling, pruebas de conformidad) e instancias configuradas desde Ténaro.
+- **Librerías de proveedor** como código de Hermes (manifiesto, contrato, adapter, polling, pruebas de conformidad). Lo propio (instancias, plantillas y librerías propias) vive en un repositorio privado y se edita desde Ténaro con una PR; los contactos y los valores de las variables, en la base de datos de Hermes.
 - **Frontera:** no orquesta ni avisa a nadie; es lo recomendado para integrar un tercero, no un paso obligatorio.
 
 ---
@@ -193,9 +194,9 @@ Detalle completo en [docs/hermes.md](docs/hermes.md).
 Detalle completo en [docs/hecate.md](docs/hecate.md).
 
 - **Qué hace:** guarda los secretos de terceros y gestiona las claves de Cerbero (CA interna, claves de firma, rotación); firma los checkpoints de auditoría de todos los componentes. Se construye en Cerbero con primitivas de librerías auditadas detrás de un port `CryptoProvider`.
-- **Modelo:** cinco aggregates event-sourced (Secret, Key, Certificate, Identity, Policy) y un registro de accesos aparte; ningún evento lleva un valor.
+- **Modelo:** cinco aggregates event-sourced (Secret, Key, Certificate, Identity, Access Policy) y un registro de accesos aparte; ningún evento lleva un valor.
 - **Cifrado por sobre:** raíz solo en memoria → claves de ámbito (una por identidad) → DEK por versión de secreto, con AES-256-GCM y la ruta, la versión y el ámbito como datos asociados.
-- **Arranque:** sellada al reiniciar; se desbloquea con la frase del owner o, para recuperar, con 2 de 3 partes de Shamir.
+- **Arranque:** sellada al reiniciar; se desbloquea con la frase del admin o, para recuperar, con 2 de 3 partes de Shamir.
 - **Acceso:** cada identidad solo lee `secret://<su identidad>/**`, con permisos derivados de lo que declaran instancias e integraciones. Los Playbooks nunca manejan secretos.
 - **Frontera:** solo red interna; nunca llama a nadie.
 
@@ -219,7 +220,7 @@ Común a todo Cerbero. La CA y las claves las gestiona Hécate.
 - **Formato SPIFFE:** `spiffe://cerbero.home/<componente>` como único URI SAN del certificado. Cada entorno tiene su **trust domain** (p. ej. `cerbero.test` para pruebas), así un certificado de pruebas nunca vale en casa.
 - **Identidades hijas:** cada integración de Hades tiene la suya (`spiffe://cerbero.home/hades/integration/<nombre>`), pedida por Hades con su certificado y solo bajo su ruta.
 - **PKI en dos niveles:** CA raíz offline (ECDSA P-256, unos 10 años) y CA intermedia en Hécate, renovada en una ceremonia offline. Certificados de componente de **3 días**, renovados a los dos tercios por mTLS y con clave nueva.
-- **Alta con un token de un solo uso** que genera el owner: caduca en minutos, lleva la huella de la CA raíz y se marca usado. La clave privada se genera en el componente y nunca sale de él.
+- **Alta con un token de un solo uso** que genera el admin: caduca en minutos, lleva la huella de la CA raíz y se marca usado. La clave privada se genera en el componente y nunca sale de él.
 - **Revocación pasiva** por defecto (se bloquea la renovación); para lo urgente, una lista corta de certificados revocados que los componentes refrescan. Deshabilitar una identidad retira también sus claves del JWKS.
 - **Relojes sincronizados (NTP)** en todos los equipos.
 
@@ -233,10 +234,11 @@ Común a todo Cerbero. La CA y las claves las gestiona Hécate.
 ### Personas
 
 - Ténaro, el backend de Cerbero para la UI, autentica con **passkeys** (WebAuthn): sin contraseñas, resistente al phishing, y el servidor solo guarda la clave pública.
-- **Alta por invitación** con un enlace de un solo uso; **recuperación** con al menos dos dispositivos por persona o códigos de recuperación para el owner.
+- **Alta por invitación** con un enlace de un solo uso; **recuperación** con al menos dos dispositivos por persona o códigos de recuperación para el admin.
 - **VPN delante** (WireGuard o Tailscale) si no se quiere exponer la app a internet.
-- La autenticación va detrás de un port (primer adapter, passkeys; OIDC si algún día hace falta un IdP).
-- Por ahora sin permisos por rol: owner y maintainer los declaran las definiciones, y cada modificación queda registrada con quién la hizo. Cuando actúa una persona, Ténaro firma el JWT con ella en el contexto.
+- La autenticación va detrás de un port: el adapter es passkeys, y un IdP (OIDC) sería otro adapter.
+- **Admin:** un único usuario privilegiado. Inicializa, desbloquea y sella Hécate, gestiona secretos, identidades y tokens de alta, invita a las personas y tiene códigos de recuperación.
+- Fuera de eso, sin permisos por rol: cualquier usuario hace el resto; owner y maintainer los declaran las definiciones, y cada modificación queda registrada con quién la hizo. Cuando actúa una persona, Ténaro firma el JWT con ella en el contexto.
 
 ### Superficies de red
 
@@ -250,8 +252,8 @@ Común a todo Cerbero. La CA y las claves las gestiona Hécate.
 
 | Pieza caída | Efecto | Recuperación |
 |---|---|---|
-| Orthros control plane | Los Eurytion siguen operando con la última Policy aplicada; no hay cambios de Policy ni enrollment | Los Eurytion recogen la Policy pendiente en el siguiente heartbeat |
-| Un Eurytion | No llegan eventos de ese host. La falta de heartbeat es en sí misma una señal | Eurytion reanuda y vacía su buffer |
+| Orthros control plane | Los Eurytion siguen operando con la última Policy aplicada; no hay cambios de Policy ni enrollment, ni se publica la salud del Fleet | Los Eurytion recogen la Policy pendiente en el siguiente heartbeat; el control plane publica los silencios que encuentre al volver |
+| Un Eurytion | No llegan eventos de ese host. El control plane publica su silencio como UDM Event | Eurytion reanuda y vacía su buffer |
 | NSM | Se pierde la visión de la red completa; los Eurytion siguen operando | El NSM reanuda la observación |
 | Echidna | No llegan eventos del dominio físico | El resto sigue operando con el dominio de red |
 | Estigia | Las cabezas bufferizan; Caronte no recibe flujo ni puede consultar; Hades no puede investigar | Las cabezas reenvían; el flujo se reanuda |

@@ -2,6 +2,7 @@
 name = "cerbero-caronte"
 version = "0.1.0"
 description = "Caronte: Detection Engine"
+license = "AGPL-3.0-or-later"
 authors = [
     { name = "Alejandro Anguita", email = "anguitaalex@gmail.com" }
 ]
