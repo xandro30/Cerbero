@@ -18,10 +18,15 @@ target/
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+*.p12
 
 # Editores y sistema
 .idea/
 .vscode/
 .DS_Store
 
-CONTINUE.md
+# Claude Code (configuración personal)
+.claude/settings.local.json
+

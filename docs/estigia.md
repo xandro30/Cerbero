@@ -284,6 +284,9 @@ Porque las cabezas ya parsean en origen al UDM. Lo que no se parseó en su momen
 **¿Cómo sabe que un dispositivo con MAC aleatoria es el mismo?**
 La entity resolution no depende de un único identificador: combina los que observa (MAC, IP, hostname...) para reconciliarlos en una entidad.
 
+**¿Cómo marca una persona un dispositivo como conocido?**
+Desde Ténaro lanza una Response o un Job de Hades, que envía a Estigia el comando de trust level; el cambio queda atribuido a esa persona. Para algo temporal (un invitado), la persona escribe una fila en una Data Table.
+
 **Si marco un dispositivo como conocido, ¿cambian las Detections pasadas?**
 No. El cambio se aplica desde ese momento como un intervalo nuevo; lo pasado se sigue viendo con el contexto que tenía.
 

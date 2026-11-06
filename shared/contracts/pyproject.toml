@@ -2,6 +2,7 @@
 name = "cerbero-contracts"
 version = "0.1.0"
 description = "Contratos publicados de Cerbero: esquema UDM, sobre común y API Contracts"
+license = "AGPL-3.0-or-later"
 authors = [
     { name = "Alejandro Anguita", email = "anguitaalex@gmail.com" }
 ]

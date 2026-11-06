@@ -1,6 +1,6 @@
 # Decisiones — Cerbero
 
-Decisiones de diseño y tecnología. Las abiertas se tomarán en su momento, se documentarán como ADR en [docs/adr](docs/adr/README.md) y se reflejarán en [ARCHITECTURE](ARCHITECTURE.md). Las desviaciones registran dónde Cerbero se aparta a propósito de su referencia, SecOps.
+Decisiones de diseño y tecnología. Las abiertas se tomarán en su momento, se documentarán como ADR en [docs/adr](docs/adr/README.md) y se reflejarán en [ARCHITECTURE](ARCHITECTURE.md) o en el documento del componente en [docs/](docs/). Las desviaciones registran dónde Cerbero se aparta a propósito de su referencia: SecOps, salvo que se nombre otra.
 
 ---
 
@@ -91,7 +91,7 @@ No hay más desviaciones de lenguaje. Se descartaron `by <d>` (tumbling: se cubr
 | Desviación | Justificación |
 |---|---|
 | Hécate se construye en Cerbero, con primitivas de librerías auditadas y sin inventar criptografía | Aprender cómo funciona por dentro; lo delicado es la gestión de claves (rotación, revocación, recuperación), no el algoritmo. |
-| Desbloqueo con la frase del owner y Shamir 2 de 3 solo para recuperar (OpenBao: Shamir o auto-unseal) | Reinicios cómodos en casa sin perder la raíz si se olvida la frase. |
+| Desbloqueo con la frase del admin y Shamir 2 de 3 solo para recuperar (OpenBao: Shamir o auto-unseal) | Reinicios cómodos en casa sin perder la raíz si se olvida la frase. |
 | Certificados de componente de 3 días (step-ca: 24 h por defecto) | Aguantar que Hécate esté sellada un tiempo sin que caigan todas las identidades; la revocación pasiva sigue acotada a días. |
 | Identidad en formato SPIFFE emitida por la CA de Hécate, sin SPIRE | Mismo formato estándar sin otro sistema que operar; las identidades hijas cubren el caso de las integraciones. |
 | JWT ligado al canal mTLS (SPIFFE desaconseja los JWT-SVID por *replay*) | El JWT lleva permisos y contexto de auditoría, y exigir que `iss` coincida con el certificado de la conexión evita su reutilización desde otro componente. |
@@ -134,6 +134,7 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 |---|---|
 | Broker / bus de eventos | Debe correr en el home lab y soportar consumo con reentrega y relectura del flujo. |
 | Formato y distribución del esquema UDM | Formato del esquema y cómo se publica como artefacto versionado. |
+| Infraestructura de observabilidad | Decidido: OpenTelemetry para trazas y métricas y logs estructurados a stdout en todos los componentes. Falta el colector, el backend y el almacenamiento. |
 | Persistencia por proyecto | Event store de Hades, almacenamiento y búsqueda de Estigia, buffer de las cabezas. |
 | Dueño del contrato de Alert | Caronte lo publica; falta decidir dónde se define y versiona. |
 | Motor de YARA-L | Implementación del parser y evaluador de YARA-L en Caronte. |
@@ -143,6 +144,7 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 | Límite inclusivo del pivote | La documentación de SecOps no aclara si `over <d> after $pivot` incluye el instante del pivote. Se asume que sí. |
 | Coche escoba en Caronte | Diseñado, no implementado: relanzar evaluaciones fallidas o incompletas, apoyado en los IDs deterministas. |
 | Event Sourcing de entidades en Estigia | Permitiría recalcular la entity resolution si cambia el algoritmo. |
+| Lenguaje del NSM y del control plane de Orthros | Eurytion es Rust ([ADR 0002](docs/adr/0002-lenguajes-por-proyecto.md)). Valorar si el NSM, o Orthros entero, pasa también a Rust por ser sondas distribuidas como binario. Si cambia, un ADR nuevo sustituye al 0002 y esas piezas salen del workspace de uv. |
 | Formato declarativo de Parsers, Filters y Aggregations | Interpretable por el motor genérico de Eurytion y versionable dentro de la Policy. Referencia: parsers CBN de SecOps. |
 | Protocolo de distribución de Policies | Pull en heartbeat. Referencia: OpAMP (OpenTelemetry). |
 | Mecanismo de firma de Policies e identidad de Eurytion | Ligado al enrollment. Puede seguir el patrón de identidades de Hécate (alta con token y, si hace falta, identidades hijas). |
@@ -151,7 +153,6 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 | Captura de tráfico para el NSM | Port mirroring / SPAN, network tap o servidor en línea. |
 | Bloques compartidos NSM ↔ Eurytion | Reutilizar dentro de Orthros el motor de Parsers, el publisher y el formato de Policy; reporte de salud del NSM al Fleet. |
 | Modelo de Echidna | Si adopta el mismo modelo de control plane + agentes que Orthros. |
-| Envío de Raw Logs a Estigia | Descartado por ahora. Reabrir si la investigación en Hades lo necesita. |
 | Schemas de Entity, Reference Data y Data Tables | Se definirán con el uso, como el esquema UDM. |
 | Feeds de inteligencia | Qué fuentes de IOCs y CVEs, con qué frecuencia y con qué ventana de retrohunt. |
 | Correlación de CVEs | Requiere inventario de software por activo (Sensor `software` de Eurytion). |
@@ -170,11 +171,11 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 | Lote de tasks | Un Playbook lanza tasks y otro las recoge con sus `handle`, para que los Playbooks terminen antes. Idea abierta. |
 | `endpoint_control` | Categoría para actuar sobre dispositivos de la red (aislar un equipo, matar un proceso); el proveedor podría ser Orthros. Idea abierta. |
 | Ténaro | Backend orquestador para la UI (*backend for frontend*), desde donde se gestionan los componentes. |
-| Repositorio de integraciones y Playbooks | Proyecto aparte de Cerbero, estilo GitSync de SecOps. Hoy su fuente de verdad es Hades. |
+| Repositorio privado de lo propio | Decidido: un repositorio privado común, separado por ruta (`hades/`, `hermes/`), que se edita desde Ténaro con PRs; lo oficial vive en el repositorio de Cerbero. Nunca van al repositorio secretos, contactos ni valores de variables: viven en la base de datos de la app que corresponda (Hades para los Playbooks e integraciones, Hermes para contactos y plantillas). Falta: si contactos y variables se guardan cifrados; la estructura de carpetas de cada ruta, la batería de pruebas de las PRs (hoy no existe) y cómo llegan los cambios fusionados a Hades y Hermes. |
 | Política común de copias de seguridad | Regla 3-2-1, cifrado y restauración probada para todos los almacenes de Cerbero. |
 | Detalle de contratos y versionado de Hermes | JSON Schema y OpenAPI 3.1, major en la ruta: el detalle, al implementar. |
 | `chat.ask` | Clasificación (consulta con `side_effect`) y comportamiento con cada proveedor, a ajustar al implementar; texto libre más adelante. |
-| Permisos por rol | Hoy owner y maintainer salen de las definiciones; la capa de permisos, más adelante. |
+| Permisos por rol | Hoy hay un único rol privilegiado, el admin (Hécate, identidades, invitaciones); owner y maintainer salen de las definiciones. Falta la capa de permisos para el resto. |
 | `signal` en otros destinos | Solo `hades.signal` tiene uso; en los demás, cuando su contrato publique señales. |
 | Adapter de hardware de Hécate | TPM o YubiKey detrás del `CryptoProvider`: desbloqueo automático y claves que no salen del dispositivo. |
 | Rotación automática de secretos | Que la librería del proveedor cree credenciales nuevas por API cuando el proveedor lo permita. |

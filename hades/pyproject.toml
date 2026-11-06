@@ -2,6 +2,7 @@
 name = "cerbero-hades"
 version = "0.1.0"
 description = "Hades: SOAR"
+license = "AGPL-3.0-or-later"
 authors = [
     { name = "Alejandro Anguita", email = "anguitaalex@gmail.com" }
 ]

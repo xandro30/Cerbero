@@ -32,7 +32,7 @@ flowchart LR
     Hermes -- "resolver secretos, renovar identidad, wrap, firmar checkpoints" --> Hecate
     Estigia -- "renovar identidad, firmar checkpoints" --> Hecate
     Caronte -- "renovar identidad" --> Hecate
-    Tenaro[Ténaro] -- "gestión y desbloqueo (owner)" --> Hecate
+    Tenaro[Ténaro] -- "gestión y desbloqueo (admin)" --> Hecate
     Hades -. "estado (ámbito status) desde un cronjob" .-> Hecate
     Todos[Todos los componentes] -- "GET JWKS" --> Hecate
 ```
@@ -42,7 +42,7 @@ flowchart LR
 | **Todos los componentes** | Renovar su certificado; resolver sus secretos; firmar los checkpoints de su auditoría; leer el JWKS |
 | **Hades** | Además, identidades hijas para sus integraciones y, desde un cronjob, el estado (ámbito `status`) |
 | **Hermes** | Además, `wrap` / `unwrap` para cifrar sus copias de seguridad |
-| **Ténaro** | Gestión (secretos, permisos, identidades, rotaciones) y desbloqueo, siempre con el owner autenticado |
+| **Ténaro** | Gestión (secretos, permisos, identidades, rotaciones) y desbloqueo, siempre con el admin autenticado |
 
 ---
 
@@ -56,7 +56,7 @@ flowchart LR
 | **Key** | Una clave propia: de cifrado por ámbito, de la CA intermedia o de firma de eventos | Por versión: `active`, `decrypt_only` / `verify_only`, `retired` |
 | **Certificate** | Un certificado emitido a una identidad | `valid`, `revoked`, `expired` |
 | **Identity** | Un componente o una identidad hija (`spiffe://cerbero.home/...`) | `enrolled`, `disabled` |
-| **Policy** | Qué rutas y operaciones puede usar una identidad | Versionada |
+| **Access Policy** | Qué rutas y operaciones puede usar una identidad | Versionada |
 
 - Todos son event-sourced y **ningún evento lleva un valor**: solo metadatos, versiones y quién.
 - Los accesos (resoluciones, renovaciones, `wrap` / `unwrap`, rechazos, intentos de desbloqueo) van a un **registro de accesos** aparte, append-only, para que los secretos no crezcan con cada lectura.
@@ -66,7 +66,7 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    Frase["Frase del owner (Argon2id)"] -- envuelve --> Raiz
+    Frase["Frase del admin (Argon2id)"] -- envuelve --> Raiz
     Shamir["Partes de Shamir (2 de 3)"] -- envuelven --> Raiz
     Raiz["Raíz (aleatoria, solo en memoria)"] -- envuelve --> Ambito["Claves de ámbito (una por identidad, versionadas)"]
     Ambito -- envuelven --> DEK["DEK (una por versión de secreto)"]
@@ -75,7 +75,7 @@ flowchart TB
 
 | Nivel | Qué cifra | Rotación | Coste de rotar |
 |---|---|---|---|
-| **Raíz** | Solo las claves de ámbito | A petición del owner | Volver a envolver unas pocas claves de ámbito |
+| **Raíz** | Solo las claves de ámbito | A petición del admin | Volver a envolver unas pocas claves de ámbito |
 | **Clave de ámbito** | Las DEK de su ámbito | Periódica (90 días por defecto) y manual | Volver a envolver las DEK; los secretos no se tocan |
 | **DEK** | Una versión de un secreto | No se rota: cada versión tiene la suya, aleatoria | — |
 
@@ -108,10 +108,10 @@ stateDiagram-v2
     unsealed --> sealed: sellar a mano o reiniciar
 ```
 
-- **Sellada** solo admite desbloquear y consultar el estado; `/health/ready` es falso. Al reiniciar, vuelve a `sealed`. El owner puede sellarla a mano con una sola acción (p. ej. ante una intrusión).
-- **La raíz es aleatoria y se guarda envuelta dos veces:** con la frase del owner (para el día a día) y con las partes de Shamir (para recuperarla si se olvida la frase). Cambiar la frase o repartir de nuevo las partes solo vuelve a envolver la raíz.
-- **Se desbloquea desde Ténaro** (passkey del owner + frase, por mTLS) **o con una CLI local** en el equipo de Hécate.
-- **Inicialización, una sola vez:** se genera la raíz, el owner fija la frase, se generan las partes de Shamir (se muestran una vez y se confirman) y se crea la CA raíz offline.
+- **Sellada** solo admite desbloquear y consultar el estado; `/health/ready` es falso. Al reiniciar, vuelve a `sealed`. El admin puede sellarla a mano con una sola acción (p. ej. ante una intrusión).
+- **La raíz es aleatoria y se guarda envuelta dos veces:** con la frase del admin (para el día a día) y con las partes de Shamir (para recuperarla si se olvida la frase). Cambiar la frase o repartir de nuevo las partes solo vuelve a envolver la raíz.
+- **Se desbloquea desde Ténaro** (passkey del admin + frase, por mTLS) **o con una CLI local** en el equipo de Hécate.
+- **Inicialización, una sola vez:** se genera la raíz, el admin fija la frase, se generan las partes de Shamir (se muestran una vez y se confirman) y se crea la CA raíz offline.
 - La raíz solo vive en memoria, sin swap ni volcados de memoria. Cada intento de desbloquear o sellar es un evento, con espera creciente tras los fallos.
 
 ### Resolver un secreto
@@ -132,7 +132,7 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant O as Owner (en Ténaro)
+    participant O as Admin (en Ténaro)
     participant K as Hécate
     participant C as Componente nuevo
     O->>K: generar token de alta para spiffe://cerbero.home/hermes
@@ -162,17 +162,17 @@ stateDiagram-v2
     active --> deprecated: llega otra versión
     deprecated --> revoked: fin del periodo de gracia
     active --> revoked: revocación urgente
-    revoked --> deprecated: restaurar (owner)
-    revoked --> destroyed: owner o max_versions
+    revoked --> deprecated: restaurar (admin)
+    revoked --> destroyed: admin o max_versions
     destroyed --> [*]
 ```
 
 - **Periodo de gracia** de 24 h por defecto: la versión anterior aún se resuelve si se pide explícitamente.
 - **`max_versions`** (10 por defecto): al superarlo, la más antigua se destruye.
-- **Volver a la anterior** (p. ej. si las credenciales nuevas no funcionan): el owner la promueve otra vez a `active`, como evento.
+- **Volver a la anterior** (p. ej. si las credenciales nuevas no funcionan): el admin la promueve otra vez a `active`, como evento.
 - **`destroy` es borrado criptográfico:** se borra la DEK de esa versión; los eventos siguen y el dato ya no se puede descifrar.
-- **Rotación de un secreto de terceros:** el owner rota en el proveedor y añade la versión nueva desde Ténaro; los componentes la recogen al refrescar su caché. Después, la prueba de conexión de la instancia (en Hermes) lo confirma.
-- **Avisos de rotación:** `rotate_every` y `expires_at` en los metadatos; un cronjob de Hades consulta el estado y un Playbook secundario avisa al owner.
+- **Rotación de un secreto de terceros:** el admin rota en el proveedor y añade la versión nueva desde Ténaro; los componentes la recogen al refrescar su caché. Después, la prueba de conexión de la instancia (en Hermes) lo confirma.
+- **Avisos de rotación:** `rotate_every` y `expires_at` en los metadatos; un cronjob de Hades consulta el estado y un Playbook secundario avisa al admin.
 - **En una fuga:** se revoca sin periodo de gracia y se rota en el proveedor.
 
 ### Auditoría y checkpoints
@@ -204,7 +204,7 @@ sequenceDiagram
 | | `POST /checkpoints:sign` | Firma los últimos hashes de los streams de un componente |
 | **Estado** (ámbito `status`) | Consulta | Sellada o no, recuentos y avisos agregados (secretos por rotar o caducar, certificados por caducar) y resultado de la verificación de la auditoría. Nunca rutas ni metadatos de un secreto concreto |
 | **Pública** | `GET /.well-known/jwks.json` | Claves públicas de firma, con su histórico |
-| **Gestión** (owner, desde Ténaro) | Varias | Secretos y versiones, revocar, restaurar, destruir, permisos, altas y bajas de identidades, revocar certificados, rotar claves, sellar |
+| **Gestión** (admin, desde Ténaro) | Varias | Secretos y versiones, revocar, restaurar, destruir, permisos, altas y bajas de identidades, revocar certificados, rotar claves, sellar |
 | **Desbloqueo** | Desbloquear, consultar el estado | Lo único disponible mientras está sellada |
 | **Salud** | `/health/live`, `/health/ready` | `ready` es falso mientras está sellada |
 
@@ -216,7 +216,7 @@ sequenceDiagram
 
 ## 6. Configuración y extensión
 
-- **Permisos que salen de las declaraciones:** al registrar una instancia de Hermes o una integración de Hades, sus referencias `secret://` dan permiso de lectura a su identidad. Una referencia fuera de su ámbito se rechaza. El valor lo introduce el owner aparte.
+- **Permisos que salen de las declaraciones:** al registrar una instancia de Hermes o una integración de Hades, sus referencias `secret://` dan permiso de lectura a su identidad. Una referencia fuera de su ámbito se rechaza. El valor lo introduce el admin aparte.
 - **Metadatos de cada secreto:** owner, tipo del valor (`string`, `json`, `pem`...), validado al escribir; `max_versions`; `rotate_every`; `expires_at`.
 - **Parámetros configurables:** periodo de gracia, rotación de las claves de ámbito, TTL de caché, duración de los certificados, retención de la auditoría.
 - **Hardware:** un adapter del `CryptoProvider` (TPM o YubiKey) para desbloqueo automático y claves que no salen del dispositivo.
@@ -231,7 +231,7 @@ hecate/
 │   ├── secrets/         # Secret y sus versiones, ciclo de vida
 │   ├── keys/            # Key, jerarquía, rotación, salvaguarda al destruir
 │   ├── identity/        # Identity, Certificate, alta, renovación, revocación
-│   ├── policy/          # Policy, ámbitos, permisos derivados de las declaraciones
+│   ├── access_policy/   # Access Policy, ámbitos, permisos derivados de las declaraciones
 │   └── audit/           # registro de accesos, cadenas, checkpoints
 ├── application/         # casos de uso: resolver, renovar, wrap, firmar checkpoint, desbloquear, gestionar
 └── infrastructure/
@@ -268,7 +268,7 @@ hecate/
 
 - **Nunca expuesta a internet;** API interna con mTLS y JWT ligado al canal.
 - **Políticas:** cada identidad solo lee `secret://<su identidad>/**`; lo demás está denegado. Una identidad padre no lee los secretos de sus hijas. Compartir un secreto es una excepción explícita y auditada.
-- **Quién hace qué:** los componentes solo leen y renuevan; la gestión y el desbloqueo, solo el owner desde Ténaro (o la CLI local para desbloquear).
+- **Quién hace qué:** los componentes solo leen y renuevan; la gestión y el desbloqueo, solo el admin desde Ténaro (o la CLI local para desbloquear).
 - **Cada cambio de política** se versiona y se registra con quién; los rechazos van al registro de accesos.
 - **Proceso** con usuario propio, sin swap ni volcados de memoria.
 
@@ -306,7 +306,7 @@ hecate/
 
 Resumen; el detalle y el porqué están en [DECISIONS](../DECISIONS.md#hécate-frente-a-sus-referencias-openbao--vault-step-ca-spiffe).
 
-- **Frente a sus referencias:** se construye en Cerbero sin inventar criptografía; frase del owner más Shamir de recuperación; certificados de 3 días; identidad SPIFFE sin SPIRE; JWT ligado al canal mTLS; Hécate firma los checkpoints de todo Cerbero.
+- **Frente a sus referencias:** se construye en Cerbero sin inventar criptografía; frase del admin más Shamir de recuperación; certificados de 3 días; identidad SPIFFE sin SPIRE; JWT ligado al canal mTLS; Hécate firma los checkpoints de todo Cerbero.
 - **Descartado:** IdP con OIDC, OAuth *client credentials*, claves API compartidas, OpenBao / SOPS + age / variables de entorno como almacén, inventar criptografía.
 - **Riesgos aceptados:** Hécate firma sus propios checkpoints (solo lo cubre un anclaje externo); tras un corte de luz no hay avisos hasta desbloquearla; Python no garantiza borrar la raíz de la memoria.
 
@@ -315,7 +315,7 @@ Resumen; el detalle y el porqué están en [DECISIONS](../DECISIONS.md#hécate-f
 ## 13. Preguntas frecuentes
 
 **¿Qué pasa si se va la luz?**
-Todo arranca y Hécate queda sellada. Los componentes aguantan con su caché hasta 1 h y sus identidades hasta 3 días; el owner la desbloquea desde Ténaro o con la CLI.
+Todo arranca y Hécate queda sellada. Los componentes aguantan con su caché hasta 1 h y sus identidades hasta 3 días; el admin la desbloquea desde Ténaro o con la CLI.
 
 **¿Y si olvido la frase?**
 Se desbloquea con 2 de las 3 partes de Shamir y se fija una frase nueva. Si se pierden la frase y las partes, no hay forma de recuperar los datos, ni desde las copias: es el precio de que nadie más pueda hacerlo.

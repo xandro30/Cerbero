@@ -10,7 +10,7 @@ Ver también: [README](README.md) · [ARCHITECTURE](ARCHITECTURE.md)
 | **UDM Event** | Todos | Hecho del mundo normalizado al esquema común. Inmutable. |
 | **Entity** | Estigia | Asset, zona o usuario que Estigia reconcilia a partir de múltiples identificadores. |
 | **Asset** | Estigia | Entity que representa un dispositivo (móvil, portátil, sensor, router...). |
-| **Context** | Estigia, Hades | Estado de las Entities en un momento dado (trust level de un Asset, estado de la casa). |
+| **Context** | Estigia, Hades | Estado de las Entities en un momento dado. El contexto permanente (trust level, anotaciones) solo lo modifica Hades; el estado de la casa y sus zonas sale de los eventos de Echidna. |
 | **Quarantine** | Estigia | Destino de los eventos que no cumplen el esquema UDM. |
 | **Entity Resolution** | Estigia | Proceso que reconcilia identificadores observados (MAC, IP, hostname...) en una Entity única. |
 | **Validity Interval** | Estigia | Ventana temporal (desde/hasta) en la que un dato de contexto de una Entity fue cierto. |
@@ -89,6 +89,7 @@ Ver también: [README](README.md) · [ARCHITECTURE](ARCHITECTURE.md)
 | **mTLS** | Todos | TLS mutuo: cliente y servidor se identifican con certificados. Da identidad y cifra el canal entre componentes, con certificados de corta duración de una CA interna. |
 | **CA interna** | Todos | Autoridad de certificados propia de Cerbero que emite los certificados de los componentes. |
 | **JWT / JWKS** | Todos | Token corto firmado por quien llama, con permisos y contexto de auditoría. El receptor lo verifica con la clave pública del emisor, publicada en un JWKS (conjunto de claves públicas). |
+| **Admin** | Ténaro, Hécate | Único usuario privilegiado: inicializa, desbloquea y sella Hécate, gestiona secretos, identidades y tokens de alta, invita a las personas y tiene códigos de recuperación. No confundir con el owner / maintainer de una definición. |
 | **Passkey** (WebAuthn) | Ténaro | Credencial sin contraseña, resistente al phishing, con la que una persona entra en Ténaro; el servidor solo guarda la clave pública. |
 | **Ténaro** | Ténaro | Backend de Cerbero para la UI y única superficie pública: autentica a las personas con passkeys y delega en cada componente. En la mitología, la entrada al inframundo desde el mundo de los vivos. |
 | **Hécate** | Hécate | Componente que guarda los secretos de terceros y gestiona las claves de Cerbero (CA interna, firmas, rotación). En la mitología, la guardiana de las llaves y las puertas del inframundo. |
@@ -97,7 +98,7 @@ Ver también: [README](README.md) · [ARCHITECTURE](ARCHITECTURE.md)
 | **KEK / DEK** | Hécate | *Key Encryption Key*: clave que solo envuelve otras claves (la raíz y las claves de ámbito). *Data Encryption Key*: clave aleatoria que cifra un solo dato (una versión de un secreto). |
 | **Envelope Encryption** | Hécate | Cifrar cada dato con su DEK y guardar la DEK envuelta por una KEK. Rotar la KEK solo vuelve a envolver las DEK. |
 | **AEAD** | Hécate | Cifrado autenticado con datos asociados (p. ej. AES-256-GCM): detecta cualquier cambio y liga el dato cifrado a su ruta, versión y ámbito. |
-| **Argon2id** | Hécate | Función que deriva una clave a partir de la frase del owner, costosa a propósito para frenar ataques por fuerza bruta. |
+| **Argon2id** | Hécate | Función que deriva una clave a partir de la frase del admin, costosa a propósito para frenar ataques por fuerza bruta. |
 | **Shamir** | Hécate | Reparto de un secreto en partes, de las que hacen falta un mínimo (p. ej. 2 de 3) para reconstruirlo. Se usa para recuperar la raíz. |
 | **Sealed / Unsealed** | Hécate | Sellada: arranca sin la raíz en memoria y solo admite desbloquearse. Desbloqueada: con la raíz en memoria, sirve secretos. |
 | **Crypto-shredding** | Hécate | Borrado criptográfico: destruir la DEK de un dato para que no se pueda descifrar, aunque sus eventos sigan existiendo. |
@@ -113,12 +114,13 @@ Ver también: [README](README.md) · [ARCHITECTURE](ARCHITECTURE.md)
 | **Sensor** | Orthros | Capacidad de observación enchufable dentro del Agent (process, connection, dns, network...). Un mismo Sensor tiene una implementación por sistema operativo. |
 | **Profile** | Orthros | Tipología de equipo (Linux, macOS, Windows, Android, iOS, IoT...). Determina qué Policy recibe un Agent. |
 | **Policy** | Orthros | Configuración versionada y firmada que Orthros publica para un Profile: Flags, Filters, Aggregations y Parsers. |
+| **Access Policy** | Hécate | Qué rutas de secretos y qué operaciones puede usar una identidad. Versionada; sus permisos salen de lo que declaran instancias e integraciones. No confundir con la Policy de Orthros. |
 | **Flag** | Orthros | Activación o desactivación de un Sensor dentro de una Policy. |
 | **Filter** | Orthros | Regla de descarte ejecutada en el Agent para no enviar datos de bajo valor. |
 | **Aggregation** | Orthros | Regla que resume en el Agent eventos repetidos en un único registro con contador. |
 | **Parser** | Orthros | Regla declarativa de mapeo de un Raw Log al UDM. Se define en Orthros y se ejecuta en el Agent. |
 | **Fleet** | Orthros | Conjunto de Agents desplegados y su gestión. |
 | **Enrollment** | Orthros | Alta de un Agent nuevo en el Fleet. |
-| **Heartbeat** | Orthros | Señal periódica del Agent: está vivo, qué versión de Policy aplica y cuánto ha descartado. |
+| **Heartbeat** | Orthros | Señal periódica del Agent al control plane: está vivo, qué versión de Policy aplica y cuánto ha descartado. El control plane publica en Estigia su resumen y la ausencia de heartbeats como UDM Events. |
 | **Drift** | Orthros | Desfase entre la Policy publicada para un Profile y la que aplica realmente un Agent. |
-| **Agentless** | Orthros | Profile de equipos donde no se puede instalar un Agent (p. ej. móviles). Se observan desde la red con los Sensors de otro Agent. |
+| **Agentless** | Orthros | Profile de equipos donde no se puede instalar un Agent (p. ej. móviles). Se observan desde la red con el Sensor `network` de un Eurytion o con el NSM. |

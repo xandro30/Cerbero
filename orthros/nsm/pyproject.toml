@@ -2,6 +2,7 @@
 name = "cerbero-orthros-nsm"
 version = "0.1.0"
 description = "Orthros: NSM, análisis del tráfico de la red"
+license = "AGPL-3.0-or-later"
 authors = [
     { name = "Alejandro Anguita", email = "anguitaalex@gmail.com" }
 ]

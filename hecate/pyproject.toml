@@ -2,6 +2,7 @@
 name = "cerbero-hecate"
 version = "0.1.0"
 description = "Hécate: secretos y claves"
+license = "AGPL-3.0-or-later"
 authors = [
     { name = "Alejandro Anguita", email = "anguitaalex@gmail.com" }
 ]
