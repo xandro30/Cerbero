@@ -152,9 +152,9 @@ decisión, no un descuido.
 - **Ramas:** tipos `feature/`, `fix/`, `chore/` y `docs/`. Una feature de Spec Kit se llama
   `feature/<NNN>-<nombre>`, con el mismo `<NNN>-<nombre>` que su carpeta en `specs/`; el resto,
   `<tipo>/<nombre>`.
-- **Worktrees:** cada rama se trabaja en su propio git worktree, fuera del checkout principal,
-  que se queda en `main`. Cada worktree tiene su entorno (`uv sync`) y su feature activa de
-  Spec Kit.
+- **Una cosa a la vez:** se trabaja en el checkout principal, en una sola rama activa; cada
+  feature de Spec Kit va en su propia rama y no se empieza otra hasta fusionarla. Sin git
+  worktrees.
 - **Commits:** Conventional Commits en inglés. El commit de squash usa el tipo que
   corresponde a la rama (`feature/` → `feat:`, `fix/` → `fix:`, `chore/` → `chore:`,
   `docs/` → `docs:`).
