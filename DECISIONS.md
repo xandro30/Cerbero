@@ -125,6 +125,8 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 |---|---|
 | Monorepo con proyectos independientes en un workspace de uv | [0001](docs/adr/0001-monorepo-uv-workspaces.md) |
 | Rust para Eurytion; Python para el resto | [0002](docs/adr/0002-lenguajes-por-proyecto.md) |
+| Persistencia de Hécate en SQLite | [0003](docs/adr/0003-persistencia-hecate-sqlite.md) |
+| Pruebas en Python con pytest e hypothesis | [0004](docs/adr/0004-pruebas-pytest-hypothesis.md) |
 
 ---
 
@@ -135,7 +137,7 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 | Broker / bus de eventos | Debe correr en el home lab y soportar consumo con reentrega y relectura del flujo. |
 | Formato y distribución del esquema UDM | Formato del esquema y cómo se publica como artefacto versionado. |
 | Infraestructura de observabilidad | Decidido: OpenTelemetry para trazas y métricas y logs estructurados a stdout en todos los componentes. Falta el colector, el backend y el almacenamiento. |
-| Persistencia por proyecto | Event store de Hades, almacenamiento y búsqueda de Estigia, buffer de las cabezas. |
+| Persistencia por proyecto | Hécate: SQLite ([ADR 0003](docs/adr/0003-persistencia-hecate-sqlite.md)). Falta: event store de Hades, almacenamiento y búsqueda de Estigia, buffer de las cabezas. |
 | Dueño del contrato de Alert | Caronte lo publica; falta decidir dónde se define y versiona. |
 | Motor de YARA-L | Implementación del parser y evaluador de YARA-L en Caronte. |
 | Temporizadores de las bombas | Bus con entrega diferida o servicio de tareas. Debe vivir fuera de Caronte. |
