@@ -76,7 +76,7 @@ Ver también: [README](README.md) · [ARCHITECTURE](ARCHITECTURE.md)
 | **Config / Env** | Hades | `config`: valores fijos de una integración, sin lógica. `env`: lo que cambia por despliegue (instancia, secretos como referencias). |
 | **Deprecation** | Hades, Hermes | Marca de una versión que va a dejar de usarse, con mensaje y sustituta. Avisa sin bloquear y emite `VersionDeprecated`; no se retira mientras algo la use. |
 | **Hermes** | Hermes | Componente con las librerías de terceros y sus contratos estándar por tipología. Lo recomendado para integrar un servicio externo, no un paso obligatorio. En la mitología, el mensajero entre los mundos. |
-| **Envelope** | Hermes, todos | Estructura común de respuesta de las APIs internas: `status`, `data`, `error` (código común y `retryable`) y `meta`. |
+| **Envelope** | Hermes, todos | Estructura común de respuesta de las APIs internas: `status`, `data`, `error` (código común y `retryable`) y `meta`. Los códigos son cerrados: `validation`, `auth`, `not_found`, `conflict`, `rate_limited`, `provider_unavailable`, `timeout` e `internal`. |
 | **Service Type** | Hermes | Contrato común de una tipología (`chat`, `email`, `ticketing`, `threat_intel`, `network_control`...), agrupado por categoría. Es el port que implementan los proveedores. |
 | **Function** | Hermes | Operación de un tipo de servicio (p. ej. `chat.ask`, `threat_intel.ip_reputation`): consulta o cambio, modo nativo (síncrona o task) y schemas. |
 | **Provider Library** | Hermes | Librería que implementa uno o varios tipos de servicio para un proveedor (adapter), con su manifiesto, su contrato de proveedor y su versión propia. |
