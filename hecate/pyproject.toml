@@ -7,7 +7,14 @@ authors = [
     { name = "Alejandro Anguita", email = "anguitaalex@gmail.com" }
 ]
 requires-python = ">=3.15"
-dependencies = []
+dependencies = [
+    "cryptography>=46",
+    "pycryptodome>=3.23",
+    "pynacl>=1.6",
+]
+
+[project.scripts]
+hecate = "hecate.infrastructure.cli.main:main"
 
 [build-system]
 requires = ["uv_build>=0.13.1,<0.14.0"]
@@ -15,3 +22,8 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-name = "hecate"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--import-mode=importlib"

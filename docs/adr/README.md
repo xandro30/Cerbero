@@ -6,6 +6,8 @@ Una decisión significativa por fichero (`NNNN-titulo.md`). Las decisiones abier
 |---|---|---|
 | [0001](0001-monorepo-uv-workspaces.md) | Monorepo con proyectos independientes en un workspace de uv | Aceptada |
 | [0002](0002-lenguajes-por-proyecto.md) | Rust para Eurytion; Python para el resto | Aceptada |
+| [0003](0003-persistencia-hecate-sqlite.md) | Persistencia de Hécate en SQLite | Aceptada |
+| [0004](0004-pruebas-pytest-hypothesis.md) | Pruebas en Python con pytest e hypothesis | Aceptada |
 
 ## Plantilla
 

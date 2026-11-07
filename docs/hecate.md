@@ -1,6 +1,6 @@
 # Hécate — secretos y claves
 
-*En la mitología, la guardiana de las llaves y las puertas del inframundo.* · Estado: diseñado · Última revisión: 2026-11-01
+*En la mitología, la guardiana de las llaves y las puertas del inframundo.* · Estado: diseñado · Última revisión: 2026-11-07
 
 Ver también: [ARCHITECTURE](../ARCHITECTURE.md) (visión transversal, en especial [Identidad y seguridad](../ARCHITECTURE.md#6-identidad-y-seguridad)) · [GLOSSARY](../GLOSSARY.md) · [DECISIONS](../DECISIONS.md)
 
@@ -20,7 +20,7 @@ Hécate custodia lo que abre las puertas de Cerbero: los **secretos de terceros*
 
 **Por qué es una pieza aparte:** es el objetivo más valioso de Cerbero. Separarla permite que su raíz viva solo en memoria, que no se exponga nunca y que tenga su propia auditoría, y que el resto de componentes no guarde ningún secreto en claro.
 
-**Cómo se construye:** en Cerbero, para entender cómo funciona por dentro, pero con primitivas de librerías auditadas (`cryptography`, `PyNaCl`) detrás de un port `CryptoProvider`. El primer adapter es software; un adapter de hardware (TPM o YubiKey) encaja en el mismo port.
+**Cómo se construye:** en Cerbero, para entender cómo funciona por dentro, pero con primitivas de librerías auditadas (`cryptography`, `PyNaCl` y, para Shamir, `PyCryptodome`) detrás de un port `CryptoProvider`. El primer adapter es software; un adapter de hardware (TPM o YubiKey) encaja en el mismo port.
 
 ---
 
@@ -67,7 +67,8 @@ flowchart LR
 ```mermaid
 flowchart TB
     Frase["Frase del admin (Argon2id)"] -- envuelve --> Raiz
-    Shamir["Partes de Shamir (2 de 3)"] -- envuelven --> Raiz
+    Shamir["Partes de Shamir (2 de 3)"] -- reconstruyen --> Recup["Clave de recuperación (aleatoria)"]
+    Recup -- envuelve --> Raiz
     Raiz["Raíz (aleatoria, solo en memoria)"] -- envuelve --> Ambito["Claves de ámbito (una por identidad, versionadas)"]
     Ambito -- envuelven --> DEK["DEK (una por versión de secreto)"]
     DEK -- "cifra con AEAD" --> Dato["Secreto cifrado"]
@@ -109,10 +110,11 @@ stateDiagram-v2
 ```
 
 - **Sellada** solo admite desbloquear y consultar el estado; `/health/ready` es falso. Al reiniciar, vuelve a `sealed`. El admin puede sellarla a mano con una sola acción (p. ej. ante una intrusión).
-- **La raíz es aleatoria y se guarda envuelta dos veces:** con la frase del admin (para el día a día) y con las partes de Shamir (para recuperarla si se olvida la frase). Cambiar la frase o repartir de nuevo las partes solo vuelve a envolver la raíz.
+- **La raíz es aleatoria y se guarda cifrada dos veces:** con una clave derivada de la frase del admin (para el día a día) y con una clave de recuperación aleatoria que se reparte en tres partes de Shamir, de las que bastan dos (para recuperarla si se olvida la frase). Cambiar la frase o repartir de nuevo las partes solo sustituye una de las dos protecciones; la raíz y los secretos no se tocan, y ambas operaciones exigen demostrarlo de nuevo con la frase actual o con dos partes.
 - **Se desbloquea desde Ténaro** (passkey del admin + frase, por mTLS) **o con una CLI local** en el equipo de Hécate.
-- **Inicialización, una sola vez:** se genera la raíz, el admin fija la frase, se generan las partes de Shamir (se muestran una vez y se confirman) y se crea la CA raíz offline.
-- La raíz solo vive en memoria, sin swap ni volcados de memoria. Cada intento de desbloquear o sellar es un evento, con espera creciente tras los fallos.
+- **Canal local de administración:** la CLI `hecate` habla con el proceso por un socket Unix (permisos `0600` en un directorio `0700`, solo el mismo usuario). Usa el sobre y los códigos de error comunes, con `conflict` para "operación no permitida en el estado actual"; no publica API Contracts ni `/capabilities`, porque no cruza componentes (constitución, principio II).
+- **Inicialización, una sola vez:** se genera la raíz, el admin fija la frase (mínimo 12 caracteres) y se generan las tres partes de Shamir, que se muestran una vez y se confirman con dos de ellas; hasta confirmar no se guarda nada. La CA raíz offline no la crea la inicialización, sino el alta de identidades. Una vez inicializada, no hay operación para borrarlo todo: volver a empezar es un procedimiento manual (parar Hécate y borrar sus datos).
+- La raíz solo vive en memoria, sin swap ni volcados de memoria. Cada intento de inicializar, desbloquear, sellar o cambiar la protección queda en el registro de accesos. Tras tres fallos seguidos, la espera es de 1, 2, 4 y 8 minutos y después de 15; el contador sobrevive a los reinicios y es común a la frase, las partes y las pruebas para cambiar la protección.
 
 ### Resolver un secreto
 
@@ -218,7 +220,7 @@ sequenceDiagram
 
 - **Permisos que salen de las declaraciones:** al registrar una instancia de Hermes o una integración de Hades, sus referencias `secret://` dan permiso de lectura a su identidad. Una referencia fuera de su ámbito se rechaza. El valor lo introduce el admin aparte.
 - **Metadatos de cada secreto:** owner, tipo del valor (`string`, `json`, `pem`...), validado al escribir; `max_versions`; `rotate_every`; `expires_at`.
-- **Parámetros configurables:** periodo de gracia, rotación de las claves de ámbito, TTL de caché, duración de los certificados, retención de la auditoría.
+- **Parámetros configurables:** perfil de Argon2id (`sensitive` por defecto o `moderate`, nunca uno más débil), periodo de gracia, rotación de las claves de ámbito, TTL de caché, duración de los certificados, retención de la auditoría.
 - **Hardware:** un adapter del `CryptoProvider` (TPM o YubiKey) para desbloqueo automático y claves que no salen del dispositivo.
 
 ---
@@ -235,7 +237,7 @@ hecate/
 │   └── audit/           # registro de accesos, cadenas, checkpoints
 ├── application/         # casos de uso: resolver, renovar, wrap, firmar checkpoint, desbloquear, gestionar
 └── infrastructure/
-    ├── crypto/          # CryptoProvider: adapter de software (cryptography, PyNaCl)
+    ├── crypto/          # CryptoProvider: adapter de software (cryptography, PyNaCl, PyCryptodome)
     ├── store/           # event store y proyecciones
     └── api/             # API interna (mTLS), JWKS, desbloqueo
 ```
@@ -252,7 +254,8 @@ hecate/
 
 | Dato | Copia |
 |---|---|
-| Event store (datos cifrados, DEK y claves de ámbito envueltas, la raíz envuelta dos veces) | Sí |
+| Configuración de sellado (la raíz cifrada dos veces), contador de intentos y registro de accesos, en SQLite ([ADR 0003](adr/0003-persistencia-hecate-sqlite.md)) | Sí |
+| Event store (datos cifrados, DEK y claves de ámbito envueltas) | Sí |
 | Registro de accesos y políticas | Sí |
 | La raíz en claro y las cachés | Nunca: solo existen en memoria |
 | CA raíz | Copia offline propia, en dos soportes guardados en sitios distintos |
