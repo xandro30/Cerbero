@@ -11,3 +11,9 @@ members = [
     "hecate",
     "tenaro",
 ]
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6",
+    "pytest>=8",
+]
