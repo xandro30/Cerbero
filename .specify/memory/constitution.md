@@ -31,6 +31,11 @@ arrastre al resto.
   y exigen `Idempotency-Key` en las peticiones con efecto. No hay excepciones: si un
   componente (p. ej. Echidna al diseñarse) necesita algo que el contrato común no cubre, se
   revisa el contrato común.
+- El contrato común aplica a las APIs **entre componentes**. Un canal local de
+  administración de un componente (p. ej. el socket Unix de Hécate), sin superficie de red y
+  cuyo único cliente es la CLI del propio componente, DEBE usar el sobre y los códigos de
+  error comunes, pero no publica API Contracts ni `/capabilities` ni exige `Idempotency-Key`;
+  su seguridad viene del acceso local.
 - Quien publica eventos tras cambiar su estado DEBE usar Transactional Outbox. Todo
   consumidor DEBE ser idempotente.
 
@@ -166,6 +171,11 @@ decisión, no un descuido.
   los dos de forma explícita.
 - **Enmiendas:** con `/speckit-constitution`, revisadas y aprobadas por el propietario. Si
   una enmienda invalida planes o specs en curso, se revisan antes de continuar.
+- **Justificación obligatoria:** toda enmienda DEBE quedar justificada por escrito en el
+  historial de abajo: qué cambia, por qué, qué alternativas se descartaron y qué artefactos
+  afecta. Lo mismo vale para cualquier regla de buenas prácticas: cambiar una decisión tomada
+  exige un ADR nuevo que sustituya al anterior con su contexto y sus opciones. Un cambio sin
+  justificación no se aprueba.
 - **Versionado semántico:** MAJOR al eliminar o redefinir un principio; MINOR al añadir un
   principio o sección o ampliar de forma material su alcance; PATCH para aclaraciones y
   redacción.
@@ -173,4 +183,33 @@ decisión, no un descuido.
   se justifica en el Complexity Tracking. `/speckit-analyze` verifica spec, plan y tasks
   contra estos principios antes de implementar.
 
-**Version**: 1.0.0 | **Ratified**: 2026-11-06 | **Last Amended**: 2026-11-06
+### Historial de enmiendas
+
+- **1.0.0 (2026-11-06) — Ratificación.** Siete principios, restricciones, flujo y gobierno,
+  derivados de ARCHITECTURE, DECISIONS, los ADR 0001-0002 y las convenciones del proyecto.
+- **1.0.0 (2026-11-07) — Sin worktrees (PR #2).** Qué: "un worktree por rama" pasa a "una
+  cosa a la vez": una rama activa en el checkout principal y una feature de Spec Kit por rama.
+  Por qué: los ficheros de un worktree fuera del proyecto eran difíciles de revisar, el
+  propietario hace el seguimiento y su plan no permite sesiones en paralelo. Alternativas:
+  worktrees dentro del repositorio en una carpeta ignorada (descartada: aislamiento que no se
+  necesita sin trabajo en paralelo); seguir fuera y añadirlos al IDE (descartada: fricción en
+  cada rama). Afecta: Flujo de desarrollo. Se hizo sin subir la versión; esta entrada corrige
+  la omisión y queda recogida en la 1.1.0.
+- **1.1.0 (2026-11-07) — Alcance del contrato común y justificación obligatoria.** Origen: el
+  `/speckit-analyze` de la feature 001 (hallazgo D1) y la petición del propietario.
+  - Principio II. Qué: el contrato común aplica a las APIs entre componentes; los canales
+    locales de administración usan el sobre y los códigos comunes, sin API Contracts,
+    `/capabilities` ni `Idempotency-Key`. Por qué: un canal local no cruza componentes, no
+    tiene superficie de red y su único cliente es la CLI del propio componente; exigirle el
+    contrato completo no protege nada, y sin la aclaración cada feature tendría que
+    reinterpretar el principio. Alternativas: dejar la interpretación en cada plan
+    (descartada: la constitución no debe depender de interpretaciones); exigir el contrato
+    completo también en local (descartada: coste sin beneficio). Afecta: plan de la feature
+    001 (Constitution Check, principio II).
+  - Governance. Qué: justificación escrita obligatoria para toda enmienda y para cambiar una
+    regla de buenas prácticas, con este historial. Por qué: la constitución es la referencia
+    no negociable; sin el porqué, una enmienda futura no se puede evaluar ni revertir con
+    criterio. Alternativas: justificar solo en la PR (descartada: queda fuera del documento
+    que se consulta). Afecta: el procedimiento de enmienda.
+
+**Version**: 1.1.0 | **Ratified**: 2026-11-06 | **Last Amended**: 2026-11-07
