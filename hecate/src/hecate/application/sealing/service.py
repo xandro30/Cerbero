@@ -342,6 +342,20 @@ class SealingService:
         self._log(Operation.UNSEAL, Method.RECOVERY, Result.SUCCESS, "shares")
         return self._open(root, UnsealMethod.RECOVERY)
 
+    # -- operations other components rely on (secrets: research R6) --------------------------------
+
+    def root(self) -> bytes:
+        """The root, only while unsealed; otherwise `conflict` with the seal state."""
+        if self._root is None:
+            raise StateConflict(self._state())
+        return self._root.get()
+
+    def verify_proof(self, proof: object) -> None:
+        """Check a proof (current passphrase or two shares) with the shared attempt counter."""
+        self._require_state(SealState.UNSEALED)
+        self._root_from_proof(self._repo.load_config(), proof)
+        self._reset_attempts()
+
     # -- changing the protection of the root (FR-011 .. FR-013) -----------------------------------
 
     @staticmethod

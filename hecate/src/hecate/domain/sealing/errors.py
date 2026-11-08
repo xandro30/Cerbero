@@ -25,9 +25,25 @@ class RateLimited(HecateError):
         self.retry_after_s = retry_after_s
 
 
+class NotFound(HecateError):
+    code = "not_found"
+
+
 class StateConflict(HecateError):
+    """The operation is not allowed now: Hécate is not in the right seal state, or the
+    secret is not in a state that allows it (`current_version` marks a stale write)."""
+
     code = "conflict"
 
-    def __init__(self, state: SealState) -> None:
-        super().__init__(f"operation not allowed while {state.value}")
+    def __init__(
+        self,
+        state: SealState | None = None,
+        message: str | None = None,
+        *,
+        current_version: int | None = None,
+    ) -> None:
+        if message is None:
+            message = f"operation not allowed while {state.value}" if state else "operation not allowed"
+        super().__init__(message)
         self.state = state
+        self.current_version = current_version

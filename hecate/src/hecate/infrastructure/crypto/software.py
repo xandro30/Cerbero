@@ -1,10 +1,14 @@
+import hashlib
+import hmac
 import os
 
 import nacl.exceptions
 import nacl.pwhash.argon2id
 from Crypto.Protocol.SecretSharing import Shamir
 from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from hecate.application.ports import CryptoError
 
@@ -38,6 +42,12 @@ class SoftwareCryptoProvider:
             return AESGCM(key).decrypt(nonce, ciphertext, aad)
         except (InvalidTag, ValueError) as exc:
             raise CryptoError("decryption failed") from exc
+
+    def hmac_sha256(self, key: bytes, data: bytes) -> bytes:
+        return hmac.new(key, data, hashlib.sha256).digest()
+
+    def hkdf_sha256(self, key: bytes, info: bytes, length: int) -> bytes:
+        return HKDF(algorithm=hashes.SHA256(), length=length, salt=None, info=info).derive(key)
 
     def shamir_split(self, secret32: bytes) -> list[tuple[int, bytes]]:
         if len(secret32) != KEY_SIZE:

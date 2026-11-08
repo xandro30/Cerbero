@@ -217,12 +217,21 @@ cerbero/
 ├── hermes/          # Librerías de terceros con contrato
 ├── hecate/          # Secretos y claves
 ├── tenaro/          # Backend de la UI
+├── specs/           # Artefactos de Spec Kit de cada feature (spec, plan, tareas)
 └── docs/            # Documentación por componente y ADR
 ```
 
 Cada proyecto Python tiene su `pyproject.toml`, su código en `src/<módulo>` con el esqueleto hexagonal (`domain`, `application`, `infrastructure`) y sus pruebas en `tests/`. Ver [ADR 0001](docs/adr/0001-monorepo-uv-workspaces.md) y [ADR 0002](docs/adr/0002-lenguajes-por-proyecto.md).
 
 La visión transversal está en [ARCHITECTURE.md](ARCHITECTURE.md), y el detalle de cada proyecto en su documento de [docs/](docs/).
+
+---
+
+## Cómo se desarrolla
+
+Cerbero sigue *Spec-Driven Development* con [Spec Kit](https://github.github.io/spec-kit/index.html). Cada feature parte de una especificación y pasa por aclaración, plan, tareas, análisis, implementación y convergencia antes de su PR. Los artefactos de cada feature están en [specs/](specs/), y los principios que gobiernan el proyecto, en la [constitución](.specify/memory/constitution.md).
+
+El código y la documentación se escriben con la ayuda de [Claude Code](https://claude.com/claude-code), de Anthropic. Cada cambio se revisa antes del merge.
 
 ---
 

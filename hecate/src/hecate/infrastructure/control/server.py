@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from hecate.application.sealing.service import SealingService
+from hecate.application.secrets.service import SecretsService
 from hecate.domain.sealing.access_log import Method, Operation
 from hecate.domain.sealing.errors import InvalidInput
 from hecate.infrastructure.control import protocol
@@ -35,6 +36,19 @@ _AUDITED: dict[str, tuple[Operation, str]] = {
 }
 
 
+# The same for the operations on secrets (their rows have subject `admin`).
+_SECRET_AUDITED: dict[str, Operation] = {
+    "secrets.create": Operation.SECRET_CREATE,
+    "secrets.add_version": Operation.SECRET_ADD_VERSION,
+    "secrets.list": Operation.SECRET_LIST,
+    "secrets.get": Operation.SECRET_GET,
+    "secrets.revoke": Operation.SECRET_REVOKE,
+    "secrets.restore": Operation.SECRET_RESTORE,
+    "secrets.promote": Operation.SECRET_PROMOTE,
+    "secrets.destroy": Operation.SECRET_DESTROY,
+}
+
+
 def _text(args: dict[str, Any], key: str) -> str:
     value = args.get(key)
     if not isinstance(value, str):
@@ -50,13 +64,14 @@ def _texts(args: dict[str, Any], key: str) -> list[str]:
 
 
 class RequestHandler:
-    """Maps protocol operations to the sealing service; synchronous and socket-free."""
+    """Maps protocol operations to the sealing and secrets services; synchronous and socket-free."""
 
-    def __init__(self, service: SealingService) -> None:
+    def __init__(self, service: SealingService, secrets: SecretsService | None = None) -> None:
         self._service = service
+        self._secrets = secrets
         s = self._service
         self._ops: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
-            "status": lambda a: s.status(),
+            "status": lambda a: self._status(),
             "init.begin": lambda a: s.init_begin(_text(a, "passphrase")),
             "init.confirm": lambda a: s.init_confirm(_text(a, "init_id"), _texts(a, "shares")),
             "init.abort": lambda a: s.init_abort(_text(a, "init_id")),
@@ -67,6 +82,45 @@ class RequestHandler:
             "shares.rekey.confirm": lambda a: s.rekey_confirm(_text(a, "rekey_id"), _texts(a, "shares")),
             "shares.rekey.abort": lambda a: s.rekey_abort(_text(a, "rekey_id")),
         }
+        if secrets is not None:
+            self._ops.update({
+                "secrets.create": self._secrets_create,
+                "secrets.list": lambda a: secrets.list_secrets(a.get("identity")),
+                "secrets.get": lambda a: secrets.get(_text(a, "path")),
+                "secrets.add_version": lambda a: secrets.add_version(
+                    _text(a, "path"), _text(a, "value"), a.get("expected_version")),
+                "secrets.revoke": lambda a: secrets.revoke(
+                    _text(a, "path"), a.get("version"), a.get("expected_version")),
+                "secrets.restore": lambda a: secrets.restore(
+                    _text(a, "path"), a.get("version"), a.get("expected_version")),
+                "secrets.promote": lambda a: secrets.promote(
+                    _text(a, "path"), a.get("version"), a.get("expected_version")),
+                "secrets.destroy": self._secrets_destroy,
+            })
+
+    def _secrets_destroy(self, args: dict[str, Any]) -> dict[str, Any]:
+        assert self._secrets is not None
+        proof = args.get("proof")
+        if not isinstance(proof, dict):
+            raise _ArgError("'proof' must be an object")
+        return self._secrets.destroy(
+            _text(args, "path"), args.get("version"), args.get("expected_version"), proof
+        )
+
+    def _status(self) -> dict[str, Any]:
+        data = self._service.status()
+        if self._secrets is not None:
+            data |= self._secrets.expiry_counts()
+        return data
+
+    def _secrets_create(self, args: dict[str, Any]) -> dict[str, Any]:
+        assert self._secrets is not None
+        return self._secrets.create(
+            _text(args, "path"), _text(args, "value"), _text(args, "value_type"),
+            max_versions=args.get("max_versions"),
+            rotate_every=args.get("rotate_every"),
+            expires_at=args.get("expires_at"),
+        )
 
     def _unseal(self, args: dict[str, Any]) -> dict[str, Any]:
         if "passphrase" in args and "shares" not in args:
@@ -88,6 +142,10 @@ class RequestHandler:
         return self._service.rekey_begin(proof)
 
     def _record_refused(self, op: str, args: dict[str, Any]) -> None:
+        if op in _SECRET_AUDITED:
+            if self._secrets is not None:
+                self._secrets.record_invalid_request(_SECRET_AUDITED[op], op.removeprefix("secrets."))
+            return
         operation, detail = _AUDITED[op]
         proof = args.get("proof") if op in ("passphrase.change", "shares.rekey.begin") else args
         method = SealingService.proof_method(proof) if isinstance(proof, dict) else Method.LOCAL

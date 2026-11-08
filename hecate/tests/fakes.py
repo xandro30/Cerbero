@@ -7,12 +7,16 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from hecate.application.ports import ConcurrencyConflict, EventRecord, KeyMaterial, SecretMaterial
+from hecate.application.secrets.service import SecretsService, SecretsSettings
 from hecate.application.sealing.service import SealingService
 from hecate.application.sealing.settings import KdfLimits, SealingSettings
 from hecate.domain.sealing.access_log import AccessLogEntry
 from hecate.domain.sealing.attempts import AttemptPolicy
 from hecate.domain.sealing.protection import SealConfig
+from hecate.infrastructure.clock import SystemClock
 from hecate.infrastructure.crypto.software import SoftwareCryptoProvider
+from hecate.infrastructure.store.sqlite import SqliteAccessLog, SqliteSealRepository, SqliteSecretStore
 
 # Cheapest Argon2id libsodium accepts: only for tests, production uses SENSITIVE or MODERATE.
 MINIMAL_KDF = KdfLimits(opslimit=1, memlimit=8192)
@@ -69,6 +73,55 @@ class InMemoryAccessLog:
         return list(self.items)
 
 
+class InMemorySecretStore:
+    """EventStore + MaterialStore in memory; transaction() undoes everything when it fails."""
+
+    def __init__(self) -> None:
+        self.events: dict[str, list[EventRecord]] = {}
+        self.secret_material: dict[tuple[str, int], SecretMaterial] = {}
+        self.key_material: dict[tuple[str, int], KeyMaterial] = {}
+
+    def _state(self):
+        return (self.events, self.secret_material, self.key_material)
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        snapshot = copy.deepcopy(self._state())
+        try:
+            yield
+        except BaseException:
+            self.events, self.secret_material, self.key_material = snapshot
+            raise
+
+    def load(self, stream: str) -> list[EventRecord]:
+        return list(self.events.get(stream, []))
+
+    def append(self, stream: str, events: list[EventRecord], expected_version: int) -> int:
+        current = len(self.events.get(stream, []))
+        if current != expected_version:
+            raise ConcurrencyConflict(current)
+        self.events.setdefault(stream, []).extend(events)
+        return current + len(events)
+
+    def streams(self, prefix: str) -> list[str]:
+        return sorted(s for s in self.events if s.startswith(prefix))
+
+    def save_secret_material(self, path: str, version: int, material: SecretMaterial) -> None:
+        self.secret_material[(path, version)] = material
+
+    def load_secret_material(self, path: str, version: int) -> SecretMaterial | None:
+        return self.secret_material.get((path, version))
+
+    def delete_secret_material(self, path: str, version: int) -> None:
+        self.secret_material.pop((path, version), None)
+
+    def save_key_material(self, identity: str, key_version: int, material: KeyMaterial) -> None:
+        self.key_material[(identity, key_version)] = material
+
+    def load_key_material(self, identity: str, key_version: int) -> KeyMaterial | None:
+        return self.key_material.get((identity, key_version))
+
+
 def make_service(
     repo=None, access_log=None, clock=None, kdf: KdfLimits = MINIMAL_KDF
 ) -> SealingService:
@@ -120,3 +173,51 @@ def initialize(service: SealingService, passphrase: str = GOOD_PASSPHRASE) -> li
     out = service.init_begin(passphrase)
     service.init_confirm(out["init_id"], out["shares"][:2])
     return out["shares"]
+
+
+class SecretsRig:
+    """An unsealed Hécate with a SecretsService over in-memory fakes."""
+
+    def __init__(self, *, unsealed: bool = True, settings: SecretsSettings | None = None) -> None:
+        self.clock = FakeClock()
+        self.access_log = InMemoryAccessLog()
+        self.sealing = make_service(access_log=self.access_log, clock=self.clock)
+        self.shares = initialize(self.sealing)
+        if unsealed:
+            self.sealing.unseal_with_passphrase(GOOD_PASSPHRASE)
+        self.store = InMemorySecretStore()
+        self.service = SecretsService(
+            sealing=self.sealing,
+            store=self.store,
+            crypto=SoftwareCryptoProvider(),
+            access_log=self.access_log,
+            clock=self.clock,
+            settings=settings or SecretsSettings(),
+        )
+
+    def secret_rows(self):
+        return [e for e in self.access_log.items if e.operation.value.startswith("secret_")]
+
+
+class SqliteStack:
+    """The real adapters over one database file, like `hecate serve` builds them."""
+
+    def __init__(self, db_path: Path, clock=None) -> None:
+        self.clock = clock if clock is not None else SystemClock()
+        self.repo = SqliteSealRepository(db_path)
+        self.access_log = SqliteAccessLog(db_path)
+        self.store = SqliteSecretStore(db_path)
+        self.sealing = SealingService(
+            crypto=SoftwareCryptoProvider(), repo=self.repo, access_log=self.access_log,
+            clock=self.clock, settings=SealingSettings(kdf=MINIMAL_KDF),
+        )
+        self.service = SecretsService(
+            sealing=self.sealing, store=self.store, crypto=SoftwareCryptoProvider(),
+            access_log=self.access_log, clock=self.clock,
+        )
+
+    def close(self) -> None:
+        self.sealing.shutdown()
+        self.repo.close()
+        self.access_log.close()
+        self.store.close()
