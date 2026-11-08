@@ -48,7 +48,10 @@ def failed(request_id: str | None, exc: Exception, started: float) -> dict[str, 
         if isinstance(exc, RateLimited):
             error["retry_after_s"] = exc.retry_after_s
         if isinstance(exc, StateConflict):
-            data = {"state": exc.state.value}
+            if exc.state is not None:
+                data["state"] = exc.state.value
+            if exc.current_version is not None:
+                data["current_version"] = exc.current_version
     else:
         error = {"code": "internal", "message": "internal error", "retryable": True}
     return {"status": "failed", "data": data, "error": error, "meta": _meta(request_id, started)}

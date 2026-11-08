@@ -102,6 +102,7 @@ Ver también: [README](README.md) · [ARCHITECTURE](ARCHITECTURE.md)
 | **Shamir** | Hécate | Reparto de un secreto en partes, de las que hacen falta un mínimo (p. ej. 2 de 3) para reconstruirlo. Se usa para recuperar la raíz. |
 | **Sealed / Unsealed** | Hécate | Sellada: arranca sin la raíz en memoria y solo admite desbloquearse. Desbloqueada: con la raíz en memoria, sirve secretos. |
 | **Crypto-shredding** | Hécate | Borrado criptográfico: destruir la DEK de un dato para que no se pueda descifrar, aunque sus eventos sigan existiendo. |
+| **Fingerprint** | Hécate | Huella con clave de una versión de secreto (HMAC del valor con una clave derivada de la clave de ámbito, 8 bytes: `ab12-cd34-ef56-7890`). Es lo único que el admin ve de un valor: le sirve para comprobar lo que escribió y no permite recuperarlo ni probar valores sin la clave. |
 | **Grace Period** (secretos) | Hécate | Tiempo en que la versión anterior de un secreto aún se resuelve tras llegar una nueva (24 h por defecto). |
 | **Checkpoint** | Hécate, todos | Firma de Hécate sobre el último hash de cada stream de auditoría. Fija lo anterior: modificarlo rompe la cadena o la firma. |
 | **Hash Chain** | Todos | Cada evento de un stream incluye el hash del anterior, de modo que cualquier cambio o borrado se detecta. |

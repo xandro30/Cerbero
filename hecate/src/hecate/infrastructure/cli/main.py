@@ -3,9 +3,11 @@ import asyncio
 import getpass
 import signal
 import sys
+from pathlib import Path
 
 from hecate.application.sealing.service import INIT_WARNING, SealingService
 from hecate.application.sealing.settings import SealingSettings
+from hecate.application.secrets.service import SecretsService
 from hecate.infrastructure.clock import SystemClock
 from hecate.infrastructure.config import ConfigError, HecateConfig
 from hecate.infrastructure.control.client import ControlClient, ControlUnavailable
@@ -13,7 +15,7 @@ from hecate.infrastructure.control.server import ControlServer, RequestHandler
 from hecate.infrastructure.crypto.software import SoftwareCryptoProvider
 from hecate.infrastructure.logs import configure_logging
 from hecate.infrastructure.process import harden_process
-from hecate.infrastructure.store.sqlite import SqliteAccessLog, SqliteSealRepository
+from hecate.infrastructure.store.sqlite import SqliteAccessLog, SqliteSealRepository, SqliteSecretStore
 
 
 def _client(config: HecateConfig) -> ControlClient:
@@ -47,6 +49,9 @@ def cmd_status(config: HecateConfig, _args: argparse.Namespace) -> int:
         print(f"failed attempts in a row: {data['consecutive_failures']}")
     if data["retry_after_s"]:
         print(f"next attempt allowed in {data['retry_after_s']}s")
+    if "secrets_expired" in data:
+        print(f"secrets expired: {data['secrets_expired']}")
+        print(f"secrets expiring in the next 7 days: {data['secrets_expiring_soon']}")
     return 0
 
 
@@ -155,6 +160,112 @@ def cmd_seal(config: HecateConfig, _args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_value(from_file: str | None) -> str | None:
+    """The value of a secret: from a file or typed without echo, never from the command line."""
+    if from_file:
+        try:
+            return Path(from_file).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            print(f"error: cannot read {from_file}: {exc.__class__.__name__}", file=sys.stderr)
+            return None
+    return getpass.getpass("Value (nothing is echoed): ")
+
+
+def cmd_secrets_create(config: HecateConfig, args: argparse.Namespace) -> int:
+    value = _read_value(args.from_file)
+    if value is None:
+        return 1
+    request = {"path": args.path, "value": value, "value_type": args.type}
+    for option in ("max_versions", "rotate_every", "expires_at"):
+        if getattr(args, option) is not None:
+            request[option] = getattr(args, option)
+    data = _call(config, "secrets.create", request)
+    if data is None:
+        return 1
+    print(f"created {data['path']} version {data['version']} fingerprint {data['fingerprint']}")
+    return 0
+
+
+def cmd_secrets_list(config: HecateConfig, args: argparse.Namespace) -> int:
+    data = _call(config, "secrets.list", {"identity": args.identity} if args.identity else {})
+    if data is None:
+        return 1
+    for item in data["secrets"]:
+        active = item["active_version"] if item["active_version"] is not None else "-"
+        expires = f" expires {item['expires_at']}" if item["expires_at"] else ""
+        print(f"{item['path']}  {item['value_type']}  active {active}  versions {item['version_count']}{expires}")
+    if not data["secrets"]:
+        print("no secrets")
+    return 0
+
+
+def cmd_secrets_get(config: HecateConfig, args: argparse.Namespace) -> int:
+    data = _call(config, "secrets.get", {"path": args.path})
+    if data is None:
+        return 1
+    print(f"{data['path']}  ({data['value_type']}, owner {data['owner']}, max versions {data['max_versions']})")
+    if data["rotate_every"]:
+        print(f"rotate every: {data['rotate_every']}")
+    if data["expires_at"]:
+        print(f"expires at: {data['expires_at']}")
+    for version in data["versions"]:
+        print(f"  version {version['version']}  {version['state']}  {version['created_at']}  "
+              f"fingerprint {version['fingerprint']}")
+    return 0
+
+
+def _read_stream_version(config: HecateConfig, path: str) -> int | None:
+    """The version of the secret that the next change must expect (see `secrets.get`)."""
+    data = _call(config, "secrets.get", {"path": path})
+    return None if data is None else data["stream_version"]
+
+
+def cmd_secrets_put(config: HecateConfig, args: argparse.Namespace) -> int:
+    expected = _read_stream_version(config, args.path)
+    if expected is None:
+        return 1
+    value = _read_value(args.from_file)
+    if value is None:
+        return 1
+    data = _call(config, "secrets.add_version",
+                 {"path": args.path, "value": value, "expected_version": expected})
+    if data is None:
+        return 1
+    print(f"added version {data['version']} to {args.path} fingerprint {data['fingerprint']}")
+    return 0
+
+
+def _cmd_secrets_change(op: str, done: str):
+    def run(config: HecateConfig, args: argparse.Namespace) -> int:
+        expected = _read_stream_version(config, args.path)
+        if expected is None:
+            return 1
+        data = _call(config, op, {"path": args.path, "version": args.version, "expected_version": expected})
+        if data is None:
+            return 1
+        print(f"version {args.version} of {args.path} {done}")
+        return 0
+    return run
+
+
+def cmd_secrets_destroy(config: HecateConfig, args: argparse.Namespace) -> int:
+    expected = _read_stream_version(config, args.path)
+    if expected is None:
+        return 1
+    print(f"Destroying version {args.version} of {args.path} erases its value for good.")
+    if args.with_shares:
+        proof = {"shares": _ask_shares()}
+    else:
+        proof = {"passphrase": getpass.getpass("Current passphrase: ")}
+    data = _call(config, "secrets.destroy", {
+        "path": args.path, "version": args.version, "expected_version": expected, "proof": proof,
+    })
+    if data is None:
+        return 1
+    print(f"version {args.version} of {args.path} destroyed")
+    return 0
+
+
 async def _serve(server: ControlServer, service: SealingService) -> None:
     await server.start()
     stop = asyncio.Event()
@@ -179,12 +290,18 @@ def cmd_serve(config: HecateConfig, _args: argparse.Namespace) -> int:
         clock=SystemClock(),
         settings=SealingSettings(kdf=config.kdf),
     )
-    server = ControlServer(RequestHandler(service), config.socket_path)
+    store = SqliteSecretStore(config.db_path)
+    secrets = SecretsService(
+        sealing=service, store=store, crypto=SoftwareCryptoProvider(),
+        access_log=access_log, clock=SystemClock(),
+    )
+    server = ControlServer(RequestHandler(service, secrets), config.socket_path)
     try:
         asyncio.run(_serve(server, service))
     finally:
         repo.close()
         access_log.close()
+        store.close()
     return 0
 
 
@@ -208,6 +325,41 @@ def build_parser() -> argparse.ArgumentParser:
     rekey = shares.add_parser("rekey", help="issue a new set of recovery shares (needs a proof)")
     rekey.add_argument("--with-shares", action="store_true", help="prove with two current shares")
     rekey.set_defaults(func=cmd_shares_rekey)
+    secrets = sub.add_parser("secrets", help="manage secrets (values are written, never read)").add_subparsers(
+        dest="secrets_command", required=True
+    )
+    create = secrets.add_parser("create", help="store a new secret (version 1)")
+    create.add_argument("path", help="secret://<identity>/<path>")
+    create.add_argument("--type", required=True, choices=["string", "json", "pem"], help="type of the value")
+    create.add_argument("--from-file", help="read the value from a file instead of typing it")
+    create.add_argument("--max-versions", dest="max_versions", type=int, help="versions kept, from 2 to 100 (default 10)")
+    create.add_argument("--rotate-every", dest="rotate_every", help="informative rotation period, e.g. 90d")
+    create.add_argument("--expires-at", dest="expires_at", help="informative expiry, ISO 8601")
+    create.set_defaults(func=cmd_secrets_create)
+    listing = secrets.add_parser("list", help="list secret paths with their metadata")
+    listing.add_argument("--identity", help="only the secrets of this identity")
+    listing.set_defaults(func=cmd_secrets_list)
+    get = secrets.add_parser("get", help="show a secret's metadata and versions (never the value)")
+    get.add_argument("path")
+    get.set_defaults(func=cmd_secrets_get)
+    put = secrets.add_parser("put", help="add a new version to a secret")
+    put.add_argument("path")
+    put.add_argument("--from-file", help="read the value from a file instead of typing it")
+    put.set_defaults(func=cmd_secrets_put)
+    for name, past, summary in (
+        ("revoke", "revoked", "revoke a version at once"),
+        ("restore", "restored", "restore a revoked version (it becomes deprecated)"),
+        ("promote", "promoted", "make a deprecated version the active one"),
+    ):
+        change = secrets.add_parser(name, help=summary)
+        change.add_argument("path")
+        change.add_argument("--version", type=int, required=True)
+        change.set_defaults(func=_cmd_secrets_change(f"secrets.{name}", past))
+    destroy = secrets.add_parser("destroy", help="destroy a revoked version for good (needs a proof)")
+    destroy.add_argument("path")
+    destroy.add_argument("--version", type=int, required=True)
+    destroy.add_argument("--with-shares", action="store_true", help="prove with two recovery shares")
+    destroy.set_defaults(func=cmd_secrets_destroy)
     sub.add_parser("seal", help="seal now: the root leaves memory").set_defaults(func=cmd_seal)
     sub.add_parser("status", help="show the seal state").set_defaults(func=cmd_status)
     return parser

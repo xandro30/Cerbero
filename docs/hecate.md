@@ -61,6 +61,7 @@ flowchart LR
 - Todos son event-sourced y **ningún evento lleva un valor**: solo metadatos, versiones y quién.
 - Los accesos (resoluciones, renovaciones, `wrap` / `unwrap`, rechazos, intentos de desbloqueo) van a un **registro de accesos** aparte, append-only, para que los secretos no crezcan con cada lectura.
 - Las escrituras llevan la versión esperada (como el *check-and-set* de OpenBao), para que dos cambios simultáneos no se pisen.
+- **El admin escribe valores pero nunca los lee.** Para comprobar lo que escribió ve la **huella** de cada versión (ver más abajo); el valor solo sale por la resolución, que es de las identidades.
 
 ### Jerarquía de claves (cifrado por sobre)
 
@@ -92,7 +93,18 @@ flowchart TB
   "aad": { "path": "secret://hermes/telegram/family_bot/bot_token", "version": 7, "scope": "hermes" } }
 ```
 
-La ruta, la versión y el ámbito van como **datos asociados** del AEAD: si alguien mueve el dato cifrado a otra ruta, no se descifra.
+La ruta, la versión y el ámbito van como **datos asociados** del AEAD: si alguien mueve el dato cifrado a otra ruta, no se descifra. Cada capa lleva los suyos: la clave de ámbito, su identidad y su versión; la DEK, la ruta, la versión, la identidad y la versión de la clave de ámbito; el valor, la ruta, la versión y la identidad.
+
+### Dónde se guarda
+
+| Tabla (SQLite) | Contenido | Se borra |
+|---|---|---|
+| `events` | Los eventos de los aggregates `Secret` (stream `secret/<identidad>/<resto>`) y `Key` (stream `key/<identidad>`): solo metadatos, fechas y huellas. Append-only (triggers que rechazan `UPDATE` y `DELETE`) y con la versión esperada del stream en cada escritura | Nunca |
+| `secret_material` | Por versión: el valor cifrado con su DEK y la DEK envuelta por la clave de ámbito | Al destruir la versión |
+| `key_material` | Por identidad y versión: la clave de ámbito envuelta por la raíz | Nunca |
+
+- **El material va fuera de los eventos** porque el borrado criptográfico exige poder eliminar la DEK de una versión, y un registro append-only no lo permite. Los eventos y el material de un cambio se escriben en una sola transacción: un corte deja el secreto como estaba. SQLite trabaja con `secure_delete`, así que una DEK borrada tampoco queda en páginas libres de las copias.
+- **Huella:** HMAC-SHA256 del valor con una clave derivada (HKDF-SHA256) de la clave de ámbito, truncado a 8 bytes y mostrado como `ab12-cd34-ef56-7890`. Al llevar clave, solo Hécate la calcula: quien vea la lista no puede adivinar valores débiles por fuerza bruta. Se guarda en el evento de la versión y aparece solo en las respuestas de `secrets.create`, `secrets.add_version` y `secrets.get`; nunca en el registro de accesos.
 
 ---
 
@@ -113,10 +125,23 @@ stateDiagram-v2
 - **La raíz es aleatoria y se guarda cifrada dos veces:** con una clave derivada de la frase del admin (para el día a día) y con una clave de recuperación aleatoria que se reparte en tres partes de Shamir, de las que bastan dos (para recuperarla si se olvida la frase). Cambiar la frase o repartir de nuevo las partes solo sustituye una de las dos protecciones; la raíz y los secretos no se tocan, y ambas operaciones exigen demostrarlo de nuevo con la frase actual o con dos partes.
 - **Se desbloquea desde Ténaro** (passkey del admin + frase, por mTLS) **o con una CLI local** en el equipo de Hécate.
 - **Canal local de administración:** la CLI `hecate` habla con el proceso por un socket Unix (permisos `0600` en un directorio `0700`, solo el mismo usuario). Usa el sobre y los códigos de error comunes, con `conflict` para "operación no permitida en el estado actual"; no publica API Contracts ni `/capabilities`, porque no cruza componentes (constitución, principio II).
+- **Operaciones de secretos en el canal local** (todas exigen Hécate desbloqueada y dejan una fila en el registro de accesos con `subject: admin`, la ruta y la versión; contrato en [specs/002-hecate-secrets/contracts](../specs/002-hecate-secrets/contracts/control-protocol.md)):
+
+  | Operación | CLI | Notas |
+  |---|---|---|
+  | `secrets.create` | `hecate secrets create <ruta> --type <tipo> [--from-file]` | Versión 1; falla con `conflict` si la ruta existe |
+  | `secrets.add_version` | `hecate secrets put <ruta> [--from-file]` | Exige `expected_version` |
+  | `secrets.list` · `secrets.get` | `hecate secrets list [--identity]` · `get <ruta>` | Metadatos y huellas, nunca el valor |
+  | `secrets.revoke` · `restore` · `promote` | `hecate secrets revoke\|restore\|promote <ruta> --version <n>` | Sin prueba; llevan `expected_version` |
+  | `secrets.destroy` | `hecate secrets destroy <ruta> --version <n> [--with-shares]` | Exige la prueba (frase actual o dos partes) y cuenta en el contador común |
+
+  El valor se lee con `getpass` o de un fichero, nunca de la línea de órdenes. `hecate status` añade los recuentos de secretos caducados y por caducar en 7 días, que se calculan con los metadatos y también responden sellada.
 - **Inicialización, una sola vez:** se genera la raíz, el admin fija la frase (mínimo 12 caracteres) y se generan las tres partes de Shamir, que se muestran una vez y se confirman con dos de ellas; hasta confirmar no se guarda nada. La CA raíz offline no la crea la inicialización, sino el alta de identidades. Una vez inicializada, no hay operación para borrarlo todo: volver a empezar es un procedimiento manual (parar Hécate y borrar sus datos).
 - La raíz solo vive en memoria, sin swap ni volcados de memoria. Cada intento de inicializar, desbloquear, sellar o cambiar la protección queda en el registro de accesos. Tras tres fallos seguidos, la espera es de 1, 2, 4 y 8 minutos y después de 15; el contador sobrevive a los reinicios y es común a la frase, las partes y las pruebas para cambiar la protección.
 
 ### Resolver un secreto
+
+La resolución (`resolve(identidad, referencias)`) es hoy un caso de uso interno sin canal: el canal local es del admin, que no lee valores, y el canal autenticado por identidad llega con las identidades. Sus reglas ya están en el caso de uso: todo o nada, tiempos de caché 300 s y 3600 s, y un único `not_found` con el mismo mensaje tanto si el secreto no existe, como si es de otra identidad o no tiene versión `active`.
 
 ```mermaid
 sequenceDiagram
@@ -169,10 +194,10 @@ stateDiagram-v2
     destroyed --> [*]
 ```
 
-- **Periodo de gracia** de 24 h por defecto: la versión anterior aún se resuelve si se pide explícitamente.
-- **`max_versions`** (10 por defecto): al superarlo, la más antigua se destruye.
+- **Periodo de gracia** de 24 h por defecto: la versión anterior aún se resuelve si se pide explícitamente. Se calcula al leer (una `deprecated` pasada su gracia cuenta como `revoked`), sin procesos en segundo plano; restaurar una `revoked` la deja `deprecated` con una gracia nueva.
+- **`max_versions`** (10 por defecto, de 2 a 100): al superarlo, la más antigua se destruye. El mínimo de 2 deja a la versión anterior su gracia tras rotar.
 - **Volver a la anterior** (p. ej. si las credenciales nuevas no funcionan): el admin la promueve otra vez a `active`, como evento.
-- **`destroy` es borrado criptográfico:** se borra la DEK de esa versión; los eventos siguen y el dato ya no se puede descifrar.
+- **`destroy` es borrado criptográfico:** se borra la DEK de esa versión; los eventos siguen y el dato ya no se puede descifrar. Solo se destruye una versión `revoked` y el admin lo demuestra de nuevo con la frase actual o dos partes (el mismo contador de intentos que el desbloqueo); revocar, restaurar y promover no piden prueba, y la destrucción por `max_versions` tampoco.
 - **Rotación de un secreto de terceros:** el admin rota en el proveedor y añade la versión nueva desde Ténaro; los componentes la recogen al refrescar su caché. Después, la prueba de conexión de la instancia (en Hermes) lo confirma.
 - **Avisos de rotación:** `rotate_every` y `expires_at` en los metadatos; un cronjob de Hades consulta el estado y un Playbook secundario avisa al admin.
 - **En una fuga:** se revoca sin periodo de gracia y se rota en el proveedor.
@@ -255,7 +280,7 @@ hecate/
 | Dato | Copia |
 |---|---|
 | Configuración de sellado (la raíz cifrada dos veces), contador de intentos y registro de accesos, en SQLite ([ADR 0003](adr/0003-persistencia-hecate-sqlite.md)) | Sí |
-| Event store (datos cifrados, DEK y claves de ámbito envueltas) | Sí |
+| Event store (`events`, solo metadatos) y material cifrado (`secret_material`: valor y DEK envuelta; `key_material`: claves de ámbito envueltas) | Sí |
 | Registro de accesos y políticas | Sí |
 | La raíz en claro y las cachés | Nunca: solo existen en memoria |
 | CA raíz | Copia offline propia, en dos soportes guardados en sitios distintos |
