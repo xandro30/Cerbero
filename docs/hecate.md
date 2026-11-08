@@ -15,12 +15,12 @@ Hécate custodia lo que abre las puertas de Cerbero: los **secretos de terceros*
 | Guardar secretos cifrados por capas, con versiones y rotación | Exponerse a internet: solo vive en la red interna |
 | Emitir y renovar las identidades de los componentes (CA interna) | Llamar a nadie: siempre le piden |
 | Gestionar las claves de cifrado y de firma, y rotarlas | Entregar secretos a los Playbooks: los resuelven los componentes al ejecutar |
-| Firmar los checkpoints de auditoría de todo Cerbero | Inventar criptografía: usa primitivas de librerías auditadas |
+| Firmar los checkpoints de auditoría de todo Cerbero | Inventar criptografía: usa primitivas de librerías auditadas, salvo Shamir, sin auditoría pública ([riesgo aceptado](../DECISIONS.md#riesgos-aceptados)) |
 | Envolver claves de otros componentes (`wrap` / `unwrap`) | Autenticar a las personas (lo hace Ténaro con passkeys) |
 
 **Por qué es una pieza aparte:** es el objetivo más valioso de Cerbero. Separarla permite que su raíz viva solo en memoria, que no se exponga nunca y que tenga su propia auditoría, y que el resto de componentes no guarde ningún secreto en claro.
 
-**Cómo se construye:** en Cerbero, para entender cómo funciona por dentro, pero con primitivas de librerías auditadas (`cryptography`, `PyNaCl` y, para Shamir, `PyCryptodome`) detrás de un port `CryptoProvider`. El primer adapter es software; un adapter de hardware (TPM o YubiKey) encaja en el mismo port.
+**Cómo se construye:** en Cerbero, para entender cómo funciona por dentro, pero con primitivas de librerías auditadas (`cryptography` y `PyNaCl`) detrás de un port `CryptoProvider`; Shamir viene de `PyCryptodome`, sin auditoría pública ([riesgo aceptado](../DECISIONS.md#riesgos-aceptados)). El primer adapter es software; un adapter de hardware (TPM o YubiKey) encaja en el mismo port.
 
 ---
 
@@ -336,7 +336,7 @@ Resumen; el detalle y el porqué están en [DECISIONS](../DECISIONS.md#hécate-f
 
 - **Frente a sus referencias:** se construye en Cerbero sin inventar criptografía; frase del admin más Shamir de recuperación; certificados de 3 días; identidad SPIFFE sin SPIRE; JWT ligado al canal mTLS; Hécate firma los checkpoints de todo Cerbero.
 - **Descartado:** IdP con OIDC, OAuth *client credentials*, claves API compartidas, OpenBao / SOPS + age / variables de entorno como almacén, inventar criptografía.
-- **Riesgos aceptados:** Hécate firma sus propios checkpoints (solo lo cubre un anclaje externo); tras un corte de luz no hay avisos hasta desbloquearla; Python no garantiza borrar la raíz de la memoria.
+- **Riesgos aceptados:** Hécate firma sus propios checkpoints (solo lo cubre un anclaje externo); tras un corte de luz no hay avisos hasta desbloquearla; Python no garantiza borrar la raíz de la memoria; ninguna implementación de Shamir tiene una auditoría pública.
 
 ---
 
@@ -352,7 +352,7 @@ Se desbloquea con 2 de las 3 partes de Shamir y se fija una frase nueva. Si se p
 No. Los secretos los resuelven los componentes al ejecutar, con su propia identidad; nunca entran en los datos de una Response.
 
 **¿Por qué no usar OpenBao directamente?**
-Para aprender cómo funciona por dentro. Se toma su modelo como referencia (sellado, versiones, `rewrap`) y se usan primitivas de librerías auditadas.
+Para aprender cómo funciona por dentro. Se toma su modelo como referencia (sellado, versiones, `rewrap`) y se usan primitivas de librerías auditadas, salvo Shamir, sin auditoría pública ([riesgo aceptado](../DECISIONS.md#riesgos-aceptados)).
 
 **¿Cómo cambio el token de un bot?**
 Rotándolo en el proveedor, añadiendo la versión nueva desde Ténaro y lanzando la prueba de conexión de la instancia. Si falla, se vuelve a la versión anterior.

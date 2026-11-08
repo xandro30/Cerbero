@@ -193,7 +193,7 @@ Detalle completo en [docs/hermes.md](docs/hermes.md).
 
 Detalle completo en [docs/hecate.md](docs/hecate.md).
 
-- **Qué hace:** guarda los secretos de terceros y gestiona las claves de Cerbero (CA interna, claves de firma, rotación); firma los checkpoints de auditoría de todos los componentes. Se construye en Cerbero con primitivas de librerías auditadas detrás de un port `CryptoProvider`.
+- **Qué hace:** guarda los secretos de terceros y gestiona las claves de Cerbero (CA interna, claves de firma, rotación); firma los checkpoints de auditoría de todos los componentes. Se construye en Cerbero con primitivas de librerías auditadas (salvo Shamir, sin auditoría pública: [riesgo aceptado](DECISIONS.md#riesgos-aceptados)) detrás de un port `CryptoProvider`.
 - **Modelo:** cinco aggregates event-sourced (Secret, Key, Certificate, Identity, Access Policy) y un registro de accesos aparte; ningún evento lleva un valor.
 - **Cifrado por sobre:** raíz solo en memoria → claves de ámbito (una por identidad) → DEK por versión de secreto, con AES-256-GCM y la ruta, la versión y el ámbito como datos asociados.
 - **Arranque:** sellada al reiniciar; se desbloquea con la frase del admin o, para recuperar, con 2 de 3 partes de Shamir.

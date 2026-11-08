@@ -1,6 +1,6 @@
 # 0002 — Rust para Eurytion; Python para el resto
 
-Estado: aceptada · Fecha: 2026-11-01
+Estado: sustituida por [0005](0005-rust-para-orthros-y-hecate.md) · Fecha: 2026-11-01
 
 ## Contexto
 

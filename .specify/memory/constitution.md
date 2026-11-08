@@ -115,20 +115,31 @@ decisión, no un descuido.
 
 ## Restricciones técnicas y de diseño
 
-- **Repositorio:** monorepo con un workspace virtual de uv ([ADR 0001](../../docs/adr/0001-monorepo-uv-workspaces.md)).
-  Cada componente Python es un miembro con su `pyproject.toml`, su código en `src/<módulo>` y
-  sus pruebas en `tests/`.
+- **Repositorio:** monorepo ([ADR 0001](../../docs/adr/0001-monorepo-uv-workspaces.md)). Cada
+  componente Python es un miembro de un workspace virtual de uv, con su `pyproject.toml`, su
+  código en `src/<módulo>` y sus pruebas en `tests/`. Cada componente Rust es un workspace de
+  Cargo en su carpeta, fuera del de uv, con sus crates y sus pruebas.
 - **Lenguajes:** cada pieza usa el lenguaje que le asigna su ADR
-  ([0002](../../docs/adr/0002-lenguajes-por-proyecto.md)): Rust (edition 2024) para Eurytion y
-  Python 3.15 con uv y `uv_build` para el resto. Pasar otra pieza a Rust exige un ADR. Los
-  contratos DEBEN poder usarse desde ambos lenguajes.
+  ([0005](../../docs/adr/0005-rust-para-orthros-y-hecate.md)): Rust (edition 2024) para Orthros
+  (Eurytion, NSM y control plane) y Hécate, y Python 3.15 con uv y `uv_build` para el resto.
+  Cambiar el lenguaje de una pieza exige un ADR que sustituya al vigente. Los contratos DEBEN
+  poder usarse desde ambos lenguajes.
+- **Herramientas:** se eligen por seguridad, garantías (auditorías, validaciones) y rendimiento;
+  la licencia del proyecto no las condiciona. En las piezas en Rust, todo el código propio
+  DEBE ser Rust y las dependencias, crates de Rust seguras y maduras, aunque envuelvan una
+  herramienta madura escrita en C (p. ej. SQLite mediante rusqlite). No se escribe C propio ni
+  se montan bindings a mano. En Python, el lenguaje se elige por legibilidad, mantenibilidad y
+  escalabilidad, y por las herramientas de su ecosistema.
 - **Nueva tecnología** (broker, persistencia, framework, formato de contratos): se decide en
   un ADR antes de usarla en un plan. Las decisiones abiertas de DECISIONS no se resuelven de
-  forma implícita dentro de una feature.
+  forma implícita dentro de un cambio.
 - **Nombres:** nombres de la mitología griega solo para aplicaciones y componentes. Los
   conceptos del dominio usan los términos SecOps descriptivos del [GLOSSARY](../../GLOSSARY.md).
-- **Licencia:** `AGPL-3.0-or-later` ([LICENSE](../../LICENSE)). Todo paquete la declara en su
-  manifiesto, y una dependencia nueva DEBE tener una licencia compatible con ella.
+- **Licencia:** `AGPL-3.0-or-later` ([LICENSE](../../LICENSE)), con un permiso adicional de
+  enlace con OpenSSL y las librerías derivadas de ella
+  ([ADR 0008](../../docs/adr/0008-excepcion-openssl-agpl.md)). Todo paquete la declara en su
+  manifiesto. La licencia no condiciona la elección de herramientas: si la mejor tiene una
+  licencia incompatible, se revisa la licencia del proyecto con un ADR.
 - **Idioma:** código, identificadores, ramas y mensajes de commit en inglés; documentación en
   español, manteniendo en inglés los términos técnicos consolidados.
 - **Operación:** OpenTelemetry para trazas y métricas, logs estructurados a stdout y
@@ -140,29 +151,47 @@ decisión, no un descuido.
 - **Fuentes de verdad:**
   - `docs/<componente>.md` y ARCHITECTURE describen el diseño vigente, sin MVP, roadmap ni
     futuro.
-  - `specs/<NNN-feature>/` describe un cambio: qué se quiere y cómo se va a hacer.
-  - DECISIONS recoge las desviaciones y lo abierto; los ADR, las decisiones tomadas.
-- **Consolidación:** al cerrar una feature, lo que cambia el diseño se lleva a
+  - `specs/<NNN>-<nombre>/` describe un cambio: qué se quiere y cómo se va a hacer. `<NNN>` es
+    el número siguiente al mayor de los que hay en `main` y en los cambios pausados de
+    DECISIONS, sea cual sea la rama del cambio.
+  - DECISIONS recoge las desviaciones, lo abierto y los cambios pausados; los ADR, las
+    decisiones tomadas.
+  - Un ADR ya fusionado solo cambia su estado y su fila del índice; el ADR que lo complementa o
+    lo sustituye lo dice en su propio texto. La spec de un cambio fusionado no se modifica. Los
+    dos son el registro de su fecha.
+- **Consolidación:** al cerrar un cambio, lo que modifica el diseño se lleva a
   `docs/<componente>.md` (y a ARCHITECTURE si es transversal), y lo que resolvió una
   decisión abierta pasa a un ADR. Los docs se actualizan solo cuando lo implementado está
   consolidado.
 - **Orden:** specify → clarify si hay dudas → plan → tasks → analyze → implement → converge. Cada
-  fase la revisa el propietario antes de pasar a la siguiente.
+  fase la revisa el propietario antes de pasar a la siguiente. Todo cambio sigue este orden,
+  sea cual sea su tipo de rama: también un chore, una migración o un cambio de documentación.
+  Ninguna fase se sustituye por un acuerdo en la conversación: un plan aprobado en el chat no
+  es un `plan.md`. Solo hay dos excepciones, que van en su rama y con PR, sin ciclo ni carpeta
+  en `specs/`: las correcciones que no cambian el significado de ningún documento ni tocan
+  código ni configuración (erratas, enlaces rotos, formato) y las subidas de versión del
+  toolchain o de las dependencias que no obligan a cambiar código. Si la subida obliga a
+  cambiar código, o la corrección cambia el significado, sigue el orden completo.
 - **Specs:** describen qué y por qué, sin tecnología. Lo que no está claro se marca como
   `NEEDS CLARIFICATION` y no se inventa.
 - **Planes:** pasan el Constitution Check antes de investigar y otra vez tras diseñar.
 - **Git (GitHub Flow):** `main` siempre estable; todo cambio se hace en una rama corta que
   entra en `main` por PR en GitHub con squash merge, también con un solo desarrollador. No se
   hace commit directo a `main`.
-- **Ramas:** tipos `feature/`, `fix/`, `chore/` y `docs/`. Una feature de Spec Kit se llama
+- **Ramas:** tipos `feature/`, `fix/`, `refactor/`, `chore/` y `docs/`; `refactor/` es para los
+  cambios de código que conservan el comportamiento, como una migración de lenguaje. Un ciclo
+  de Spec Kit puede ir en una rama de cualquier tipo. Una rama `feature/` se llama
   `feature/<NNN>-<nombre>`, con el mismo `<NNN>-<nombre>` que su carpeta en `specs/`; el resto,
   `<tipo>/<nombre>`.
 - **Una cosa a la vez:** se trabaja en el checkout principal, en una sola rama activa; cada
-  feature de Spec Kit va en su propia rama y no se empieza otra hasta fusionarla. Sin git
-  worktrees.
+  cambio va en su propia rama y no se empieza otro hasta fusionarlo, salvo que el propietario
+  lo pause. Un cambio pausado se registra en la sección «Cambios pausados» de
+  [DECISIONS](../../DECISIONS.md#cambios-pausados) con su carpeta de `specs/`, su rama, el
+  motivo y el cambio al que espera. Mientras un cambio reanudado no se fusiona, su fila sigue
+  ahí y solo reserva su número; la retira la PR que lo fusiona. Sin git worktrees.
 - **Commits:** Conventional Commits en inglés. El commit de squash usa el tipo que
-  corresponde a la rama (`feature/` → `feat:`, `fix/` → `fix:`, `chore/` → `chore:`,
-  `docs/` → `docs:`).
+  corresponde a la rama (`feature/` → `feat:`, `fix/` → `fix:`, `refactor/` → `refactor:`,
+  `chore/` → `chore:`, `docs/` → `docs:`).
 
 ## Governance
 
@@ -211,5 +240,85 @@ decisión, no un descuido.
     no negociable; sin el porqué, una enmienda futura no se puede evaluar ni revertir con
     criterio. Alternativas: justificar solo en la PR (descartada: queda fuera del documento
     que se consulta). Afecta: el procedimiento de enmienda.
+- **1.2.0 (2026-11-08) — Rust para Orthros y Hécate, y flujo de los cambios.** Tres bloques,
+  cada uno con su origen.
+  - Restricciones técnicas, Lenguajes y Repositorio. Origen: el `/speckit-plan` de la feature
+    003 (identidades de Hécate) y la decisión del propietario. Qué: Hécate y Orthros entero
+    (Eurytion, NSM y control plane) pasan a Rust y el resto sigue en Python; cada componente
+    Rust es un workspace de Cargo fuera del de uv; cambiar el lenguaje de una pieza exige un
+    ADR que sustituya al vigente (el 0005 sustituye al 0002).
+  - Por qué, en Hécate: Python no permite borrar de la memoria los secretos de paso (frases,
+    DEK, valores descifrados), un riesgo aceptado en DECISIONS, y Rust sí (`zeroize`). La
+    primera API entre componentes tiene que leer el certificado del cliente en cada petición
+    para ligar el token corto al canal (principio V): el servidor previsto en Python (uvicorn)
+    no lo pasa a la aplicación, y rustls lo da de forma nativa con un verificador propio.
+    Además, los estados sellada y desbloqueada se pueden expresar como tipos.
+  - Por qué, en Orthros: el NSM analiza tráfico hostil a velocidad de red, donde la seguridad
+    de memoria y el rendimiento cuentan; NSM, control plane y Eurytion comparten el modelo de
+    Policy, su firma y el motor de Parsers, que en un workspace de Cargo son crates comunes (el
+    principio I permite compartir código dentro de un componente).
+  - El objetivo de aprendizaje (criptografía, CA y análisis de seguridad) se cumple en los dos
+    lenguajes, y el tiempo de la migración no es crítico para el propietario.
+  - Alternativas: Hécate en Python con aiohttp para la API mTLS (descartada: mantiene el riesgo
+    de memoria y añade un stack distinto solo para leer el certificado); el núcleo criptográfico
+    de Hécate en Rust como extensión de Python (descartada: dos lenguajes y una frontera dentro
+    del núcleo criptográfico); solo el NSM en Rust (descartada: el control plane tendría que
+    reimplementar el modelo de Policy y no podría ejecutar el motor de Parsers para validarlos);
+    dejar Orthros como decisión abierta (descartada por el propietario: ya que se revisaba el
+    mapa de lenguajes, se decide de una vez).
+  - Afecta: el ADR 0002, sustituido por el 0005; DECISIONS, donde se cierra el lenguaje del NSM
+    y del control plane; Hécate, que se porta a Rust en un cambio propio, con paridad de
+    comportamiento de las features 001 y 002; la feature 003, pausada en DECISIONS y que se
+    replanifica en Rust; y, al consolidar la migración, el README, el README de Orthros, el doc
+    de Hécate, el riesgo de memoria de DECISIONS y el workspace de uv.
+  - Restricciones técnicas, Herramientas y Licencia. Origen: la elección de la pila de Hécate
+    en Rust (ADR 0007) y la decisión del propietario. Qué: una restricción nueva fija cómo se
+    eligen las herramientas (seguridad, garantías y rendimiento; en Rust, todo el código propio
+    es Rust y las dependencias son crates seguras y maduras, aunque envuelvan C, sin C propio
+    ni bindings a mano; en Python, legibilidad, mantenibilidad y escalabilidad). La licencia
+    deja de condicionar la elección de herramientas: si la mejor tiene una licencia
+    incompatible, se revisa la del proyecto con un ADR. La AGPL gana un permiso adicional de
+    enlace con OpenSSL y sus derivadas (ADR 0008).
+  - Por qué: al elegir la pila de Hécate en Rust, la regla de licencia («una dependencia nueva
+    DEBE tener una licencia compatible») descartaba aws-lc-rs y ring, que llevan código bajo la
+    licencia antigua de OpenSSL, incompatible con la GPL según la FSF. Son las opciones con más
+    garantías (aws-lc-rs tiene un módulo FIPS 140-3 validado y partes con verificación formal)
+    y los proveedores de rustls. El propietario no quiere que la licencia condicione
+    herramientas de seguridad, y quiere que lo que se busca con Rust, seguridad y eficiencia,
+    no se pierda en la capa que se escribe o se integra. Fijarlo evita repetir la discusión en
+    cada pieza.
+  - Alternativas: mantener la regla y usar OpenSSL 3 o RustCrypto (descartada: menos garantías,
+    o una TLS en C en lugar de rustls); cambiar a una licencia permisiva (descartada: se pierde
+    el copyleft en red elegido para Cerbero); dejar los criterios solo en la memoria de trabajo
+    (descartada: la constitución es la referencia que se consulta al planificar).
+  - Afecta: LICENSE-EXCEPTION y el README (permiso adicional), el ADR 0007 (pila de Hécate en
+    Rust), el ADR 0005 (por qué Python en el resto) y la política de licencias de cargo-deny,
+    que se crea con la migración.
+  - Flujo de desarrollo y documentación. Origen: el port de Hécate implementado desde un plan
+    aprobado en la conversación, que el propietario descartó, y el clarify y el plan del cambio
+    004. Qué: todo cambio sigue el orden de Spec Kit en cualquier tipo de rama, con dos únicas
+    excepciones (las correcciones que no cambian el significado y las subidas de versión que no
+    obligan a cambiar código), y ningún acuerdo en la conversación sustituye a una fase; la
+    carpeta de `specs/` lleva una numeración global; un tipo de rama nuevo, `refactor/`, con
+    commit `refactor:`, para los cambios de código que conservan el comportamiento; el
+    propietario puede pausar un cambio sin fusionar, que queda registrado en DECISIONS; la
+    unidad de trabajo se llama «cambio», y «feature» queda para la rama `feature/` y para lo que
+    añade funcionalidad; y los ADRs ya fusionados y las specs fusionadas no se editan.
+  - Por qué: el port se implementó sin spec, plan ni tareas; la constitución no decía cómo entra
+    en Spec Kit un cambio que no es una feature, ni permitía empezar otro con la feature 003 sin
+    fusionar; «feature» nombraba a la vez un tipo de rama y cualquier unidad de trabajo; y nada
+    impedía reescribir un ADR aceptado.
+  - Alternativas: un ciclo reducido para los chores (descartada: deja sin revisar lo que puede
+    cambiar código o decisiones); todo cambio sin excepciones (descartada: una errata o cada
+    versión estable de Rust necesitarían un ciclo entero); dejar implícito que un acuerdo en el
+    chat no sustituye a una fase (descartada: ya falló una vez); `chore/` o `feature/` para la
+    migración (descartadas: `chore:` es para lo que no toca código ni pruebas, y `feat:`
+    anunciaría una funcionalidad que no existe); registrar la pausa en la spec del cambio
+    pausado (descartada: no se ve desde `main` y obliga a tocar dos ramas); «feature» o
+    «change» como término (descartadas: doble sentido, o un término en inglés que no está
+    consolidado); ADRs vivos que se actualizan (descartada: se pierde qué se decidió y cuándo).
+  - Afecta: la sección de flujo; el README («Cómo se desarrolla» y el árbol de `specs/`);
+    DECISIONS (sección de cambios pausados, con la feature 003); y la feature 003, pausada hasta
+    que se fusione la migración de Hécate.
 
-**Version**: 1.1.0 | **Ratified**: 2026-11-06 | **Last Amended**: 2026-11-07
+**Version**: 1.2.0 | **Ratified**: 2026-11-06 | **Last Amended**: 2026-11-08
