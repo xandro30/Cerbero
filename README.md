@@ -178,7 +178,7 @@ Como Cerbero, guardián de las puertas del Inframundo, el sistema en su conjunto
 ### 7. 🗝️ HÉCATE — Secretos y claves
 *En la mitología, la guardiana de las llaves y las puertas del inframundo.*
 
-**Hécate** custodia lo que abre las puertas: los secretos de terceros y las claves de Cerbero. La construimos nosotros, pero con criptografía de librerías auditadas.
+**Hécate** custodia lo que abre las puertas: los secretos de terceros y las claves de Cerbero. La construimos nosotros, pero con criptografía de librerías auditadas, salvo Shamir, sin auditoría pública ([riesgo aceptado](DECISIONS.md#riesgos-aceptados)).
 
 * **Responsabilidades:**
   * **Secretos de terceros:** cifrados por capas, con versiones, rotación y borrado criptográfico. Cada proyecto solo lee los suyos.
@@ -217,7 +217,7 @@ cerbero/
 ├── hermes/          # Librerías de terceros con contrato
 ├── hecate/          # Secretos y claves
 ├── tenaro/          # Backend de la UI
-├── specs/           # Artefactos de Spec Kit de cada feature (spec, plan, tareas)
+├── specs/           # Artefactos de Spec Kit de cada cambio (spec, plan, tareas)
 └── docs/            # Documentación por componente y ADR
 ```
 
@@ -229,7 +229,7 @@ La visión transversal está en [ARCHITECTURE.md](ARCHITECTURE.md), y el detalle
 
 ## Cómo se desarrolla
 
-Cerbero sigue *Spec-Driven Development* con [Spec Kit](https://github.github.io/spec-kit/index.html). Cada feature parte de una especificación y pasa por aclaración, plan, tareas, análisis, implementación y convergencia antes de su PR. Los artefactos de cada feature están en [specs/](specs/), y los principios que gobiernan el proyecto, en la [constitución](.specify/memory/constitution.md).
+Cerbero sigue *Spec-Driven Development* con [Spec Kit](https://github.github.io/spec-kit/index.html). Cada cambio parte de una especificación y pasa por aclaración, plan, tareas, análisis, implementación y convergencia antes de su PR; solo las correcciones que no cambian el significado (erratas, enlaces rotos o formato) y las subidas de versión que no obligan a tocar código van directas a su PR. Los artefactos de cada cambio están en [specs/](specs/), y los principios que gobiernan el proyecto, en la [constitución](.specify/memory/constitution.md).
 
 El código y la documentación se escriben con la ayuda de [Claude Code](https://claude.com/claude-code), de Anthropic. Cada cambio se revisa antes del merge.
 
@@ -254,3 +254,5 @@ Lo pendiente de diseño (Echidna, esquema UDM) está en [DECISIONS](DECISIONS.md
 ## 🛡️ Licencia
 
 Proyecto personal de ciberseguridad doméstica para entornos *Home Lab*, publicado bajo la [GNU Affero General Public License v3.0 o posterior](LICENSE) (`AGPL-3.0-or-later`). Quien modifique Cerbero y lo ofrezca a otros, también como servicio por red, debe publicar su código con la misma licencia.
+
+La licencia incluye un [permiso adicional](LICENSE-EXCEPTION) para enlazar con OpenSSL y con las librerías derivadas de ella (BoringSSL, AWS-LC, ring), cuya licencia antigua no es compatible con la GPL ([ADR 0008](docs/adr/0008-excepcion-openssl-agpl.md)).

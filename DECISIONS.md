@@ -1,6 +1,6 @@
 # Decisiones — Cerbero
 
-Decisiones de diseño y tecnología. Las abiertas se tomarán en su momento, se documentarán como ADR en [docs/adr](docs/adr/README.md) y se reflejarán en [ARCHITECTURE](ARCHITECTURE.md) o en el documento del componente en [docs/](docs/). Las desviaciones registran dónde Cerbero se aparta a propósito de su referencia: SecOps, salvo que se nombre otra.
+Decisiones de diseño y tecnología. Las abiertas se tomarán en su momento, se documentarán como ADR en [docs/adr](docs/adr/README.md) y se reflejarán en [ARCHITECTURE](ARCHITECTURE.md) o en el documento del componente en [docs/](docs/). Las desviaciones registran dónde Cerbero se aparta a propósito de su referencia: SecOps, salvo que se nombre otra. Los cambios pausados registran los cambios sin fusionar que el propietario aparcó, para que nadie reutilice su número de `specs/`.
 
 ---
 
@@ -90,7 +90,7 @@ No hay más desviaciones de lenguaje. Se descartaron `by <d>` (tumbling: se cubr
 
 | Desviación | Justificación |
 |---|---|
-| Hécate se construye en Cerbero, con primitivas de librerías auditadas y sin inventar criptografía | Aprender cómo funciona por dentro; lo delicado es la gestión de claves (rotación, revocación, recuperación), no el algoritmo. |
+| Hécate se construye en Cerbero, con primitivas de librerías auditadas (salvo Shamir, sin auditoría pública: [riesgo aceptado](#riesgos-aceptados)) y sin inventar criptografía | Aprender cómo funciona por dentro; lo delicado es la gestión de claves (rotación, revocación, recuperación), no el algoritmo. |
 | Desbloqueo con la frase del admin y Shamir 2 de 3 solo para recuperar (OpenBao: Shamir o auto-unseal) | Reinicios cómodos en casa sin perder la raíz si se olvida la frase. |
 | Certificados de componente de 3 días (step-ca: 24 h por defecto) | Aguantar que Hécate esté sellada un tiempo sin que caigan todas las identidades; la revocación pasiva sigue acotada a días. |
 | Identidad en formato SPIFFE emitida por la CA de Hécate, sin SPIRE | Mismo formato estándar sin otro sistema que operar; las identidades hijas cubren el caso de las integraciones. |
@@ -105,7 +105,7 @@ No hay más desviaciones de lenguaje. Se descartaron `by <d>` (tumbling: se cubr
 | OAuth *client credentials* entre componentes | Todo el tráfico interno dependería de que el IdP estuviera disponible. |
 | Claves API compartidas entre componentes | Un secreto común, sin caducidad ni identidad. |
 | OpenBao, SOPS + age, variables de entorno o Docker secrets como almacén | Se prefiere construirlo para aprender. |
-| Inventar criptografía | Solo primitivas de librerías auditadas. |
+| Inventar criptografía | Solo primitivas de librerías auditadas; Shamir, sin auditoría pública, es un [riesgo aceptado](#riesgos-aceptados). |
 
 ### Riesgos aceptados
 
@@ -114,6 +114,7 @@ No hay más desviaciones de lenguaje. Se descartaron `by <d>` (tumbling: se cubr
 | Hécate firma sus propios checkpoints: quien llegue a la propia Hécate podría reescribirla y volver a firmarla | Solo lo cubre anclar los checkpoints fuera de Cerbero, que queda para más adelante. |
 | Tras un corte de luz de toda la casa, Hécate queda sellada y no hay avisos hasta desbloquearla | Los avisos dependen de secretos que custodia Hécate; Ténaro muestra el estado. |
 | Python no garantiza borrar la raíz de la memoria | Se mitiga más adelante con el adapter de hardware. |
+| Ninguna implementación de Shamir tiene una auditoría pública confirmada, ni en Python (PyCryptodome) ni en Rust (vsss-rs, [ADR 0007](docs/adr/0007-pila-hecate-rust.md)) | Shamir solo protege la clave de recuperación; el algoritmo es pequeño y revisable, y lo cubren pruebas: cualquier pareja de partes reconstruye la clave y una sola parte no revela nada. |
 
 ---
 
@@ -124,9 +125,12 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 | Decisión | ADR |
 |---|---|
 | Monorepo con proyectos independientes en un workspace de uv | [0001](docs/adr/0001-monorepo-uv-workspaces.md) |
-| Rust para Eurytion; Python para el resto | [0002](docs/adr/0002-lenguajes-por-proyecto.md) |
+| Rust para Orthros y Hécate; Python para el resto (sustituye al 0002) | [0005](docs/adr/0005-rust-para-orthros-y-hecate.md) |
 | Persistencia de Hécate en SQLite | [0003](docs/adr/0003-persistencia-hecate-sqlite.md) |
 | Pruebas en Python con pytest e hypothesis | [0004](docs/adr/0004-pruebas-pytest-hypothesis.md) |
+| Pruebas en Rust con cargo test y proptest | [0006](docs/adr/0006-pruebas-rust-cargo-proptest.md) |
+| Pila de Hécate en Rust: aws-lc-rs, libsodium para Argon2id, vsss-rs, tokio y rusqlite | [0007](docs/adr/0007-pila-hecate-rust.md) |
+| Permiso adicional de enlace con OpenSSL y sus derivadas en la AGPL | [0008](docs/adr/0008-excepcion-openssl-agpl.md) |
 
 ---
 
@@ -146,7 +150,7 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 | Límite inclusivo del pivote | La documentación de SecOps no aclara si `over <d> after $pivot` incluye el instante del pivote. Se asume que sí. |
 | Coche escoba en Caronte | Diseñado, no implementado: relanzar evaluaciones fallidas o incompletas, apoyado en los IDs deterministas. |
 | Event Sourcing de entidades en Estigia | Permitiría recalcular la entity resolution si cambia el algoritmo. |
-| Lenguaje del NSM y del control plane de Orthros | Eurytion es Rust ([ADR 0002](docs/adr/0002-lenguajes-por-proyecto.md)). Valorar si el NSM, o Orthros entero, pasa también a Rust por ser sondas distribuidas como binario. Si cambia, un ADR nuevo sustituye al 0002 y esas piezas salen del workspace de uv. |
+| APIs internas en Python y certificado del cliente | uvicorn no pasa a la aplicación el certificado del cliente, que el receptor necesita para ligar el token corto al canal. Hermes, y cualquier servicio en Python con API, lo resuelve en su ADR: aiohttp, uvicorn adaptado o un proxy TLS delante. |
 | Formato declarativo de Parsers, Filters y Aggregations | Interpretable por el motor genérico de Eurytion y versionable dentro de la Policy. Referencia: parsers CBN de SecOps. |
 | Protocolo de distribución de Policies | Pull en heartbeat. Referencia: OpAMP (OpenTelemetry). |
 | Mecanismo de firma de Policies e identidad de Eurytion | Ligado al enrollment. Puede seguir el patrón de identidades de Hécate (alta con token y, si hace falta, identidades hijas). |
@@ -183,3 +187,13 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 | Rotación automática de secretos | Que la librería del proveedor cree credenciales nuevas por API cuando el proveedor lo permita. |
 | Anclaje externo de los checkpoints | Una copia de los checkpoints firmados fuera de Cerbero, para detectar también una reescritura de Hécate. |
 | Relación Entidades ↔ Cases | Explorar Cases a través de las entidades que comparten, al estilo de una base de grafos. Idea sin decidir. |
+
+---
+
+## Cambios pausados
+
+Cambios sin fusionar que el propietario aparcó para hacer antes otro (constitución, «Una cosa a la vez»). Su número de `specs/` queda reservado, y la fila la retira la PR que fusiona el cambio.
+
+| Cambio | Rama | Motivo | Espera a |
+|---|---|---|---|
+| `003-hecate-identities` | `feature/003-hecate-identities` | Hécate pasa a Rust ([ADR 0005](docs/adr/0005-rust-para-orthros-y-hecate.md)) y la feature se planifica sobre la Hécate migrada | Que se fusione la migración de Hécate |
