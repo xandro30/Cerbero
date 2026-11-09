@@ -1,0 +1,29 @@
+{
+  "generator": "specs/005-hecate-rust/vectors/generate.py",
+  "source": "main@0287c38",
+  "python": "3.15.0",
+  "unicode": "17.0.0",
+  "cases": [
+    {
+      "passphrase": "correct horse battery staple",
+      "salt": "000102030405060708090a0b0c0d0e0f",
+      "opslimit": 1,
+      "memlimit": 8192,
+      "key": "d17ea6341ca93da6079ea2f64dc4aa31dd1aaf9caa67fb42ac4afd0714706f26"
+    },
+    {
+      "passphrase": "contraseña con eñe y 🔐",
+      "salt": "6465666768696a6b6c6d6e6f70717273",
+      "opslimit": 1,
+      "memlimit": 8192,
+      "key": "1f7cfe7833f8873edf103978b6031a9e44011753fddcfbb5a58d6870cbe2352b"
+    },
+    {
+      "passphrase": "correct horse battery staple",
+      "salt": "c8c9cacbcccdcecfd0d1d2d3d4d5d6d7",
+      "opslimit": 3,
+      "memlimit": 268435456,
+      "key": "0b67acd1f689abb1c2e8e039cb3c064e498c81bef7106e690f32aafca18ab9a2"
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+[graph]
+all-features = true
+
+[advisories]
+ignore = []
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.93
+unused-allowed-license = "allow"
+exceptions = []
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+# Duplicates that no published release removes: both live only at build time, in code that
+# never reaches the binary.
+skip = [
+    { crate = "hashbrown@0.16", reason = "libflate_lz77 2.3.0, the latest, still on 0.16; only the build script of libsodium-sys-stable uses it to unpack libsodium" },
+    { crate = "syn@2", reason = "the proc-macros of tracing-attributes 0.1.31 and zeroize_derive 1.5.0, the latest, still on syn 2, while serde, clap, thiserror and tokio use syn 3" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

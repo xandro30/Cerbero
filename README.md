@@ -215,13 +215,13 @@ cerbero/
 ├── caronte/         # Detection Engine
 ├── hades/           # SOAR Engine
 ├── hermes/          # Librerías de terceros con contrato
-├── hecate/          # Secretos y claves
+├── hecate/          # Secretos y claves (Rust)
 ├── tenaro/          # Backend de la UI
 ├── specs/           # Artefactos de Spec Kit de cada cambio (spec, plan, tareas)
 └── docs/            # Documentación por componente y ADR
 ```
 
-Cada proyecto Python tiene su `pyproject.toml`, su código en `src/<módulo>` con el esqueleto hexagonal (`domain`, `application`, `infrastructure`) y sus pruebas en `tests/`. Ver [ADR 0001](docs/adr/0001-monorepo-uv-workspaces.md) y [ADR 0002](docs/adr/0002-lenguajes-por-proyecto.md).
+Cada proyecto Python tiene su `pyproject.toml`, su código en `src/<módulo>` con el esqueleto hexagonal (`domain`, `application`, `infrastructure`) y sus pruebas en `tests/`. Hécate es un workspace de Cargo (`hecate/Cargo.toml`) con un crate por capa (`hecate-domain`, `hecate-application`, `hecate-infrastructure` y `hecate-cli`, que da el binario `hecate`), cada uno con sus pruebas. Ver [ADR 0001](docs/adr/0001-monorepo-uv-workspaces.md) y [ADR 0005](docs/adr/0005-rust-para-orthros-y-hecate.md).
 
 La visión transversal está en [ARCHITECTURE.md](ARCHITECTURE.md), y el detalle de cada proyecto en su documento de [docs/](docs/).
 

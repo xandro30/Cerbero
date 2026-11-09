@@ -1,0 +1,57 @@
+{
+  "generator": "specs/005-hecate-rust/vectors/generate.py",
+  "source": "main@0287c38",
+  "python": "3.15.0",
+  "unicode": "17.0.0",
+  "cases": [
+    {
+      "kind": "fixed",
+      "root": "0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a",
+      "identity": "hermes",
+      "key_version": 1,
+      "path": "secret://hermes/telegram/family_bot/bot_token",
+      "version": 2,
+      "value": "token-ñ-🔑",
+      "scope_key": "333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152",
+      "scope_key_nonce": "0102030405060708090a0b0c",
+      "scope_key_ciphertext": "232c66ac922d1772aec92199528d38e19db254118b523fb9dc96963f70f1e0e6284542f7b2815b5f1e650965f73aceaa",
+      "dek": "5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a",
+      "dek_nonce": "15161718191a1b1c1d1e1f20",
+      "dek_ciphertext": "f14dbcf05ab3afe0aa816145632aeca0b9152f8d2bf44fa3e5724adbf3d92ec904625c61b475492ac9c5770cad54ed34",
+      "value_nonce": "292a2b2c2d2e2f3031323334",
+      "value_ciphertext": "2b1ef6931e2caea95f3b30ce631ef00e4962672315fb3ec4a359d64560"
+    },
+    {
+      "kind": "random",
+      "root": "e5448de4b9017ac3cdf5cd63ab45942e5c0c9986a72776db8673855156d032d1",
+      "identity": "hermes",
+      "key_version": 1,
+      "path": "secret://hermes/telegram/family_bot/bot_token",
+      "version": 1,
+      "value": "plain value",
+      "scope_key": "6118b815f49dd215f38daa7f1448d1b8316b3b929e64036ccee21bc04b1808ea",
+      "scope_key_nonce": "1a9dba1f27fdd2e23e769dbb",
+      "scope_key_ciphertext": "4c05485168522a75d2131b92caadb7af901ea771a4db73c21803b173664a18092bff3745b8111e5b9a455ca811652fe4",
+      "dek_nonce": "cdb1c251c6a6d3a51c27bd71",
+      "dek_ciphertext": "8a164c4950000eea621dcf9ff90d00e56d29f38a9ba47da5d854a00f1307adf57a6279b8ce2ac6277347c4a8591f9fd2",
+      "value_nonce": "03499c9ac24ac2b326e32719",
+      "value_ciphertext": "50f99106f87b9a692da0a2e1cb6090546d64c97207e25c40e9cebf"
+    },
+    {
+      "kind": "random",
+      "root": "e5448de4b9017ac3cdf5cd63ab45942e5c0c9986a72776db8673855156d032d1",
+      "identity": "tenaro-web",
+      "key_version": 1,
+      "path": "secret://tenaro-web/db/password",
+      "version": 7,
+      "value": "contraseña",
+      "scope_key": "dc864b34e7b9ea8ffdb63c0a3ebdd1c5c4ccae191bcd0ad6dab95643a0de7efc",
+      "scope_key_nonce": "868fe31948f4e924115bd30c",
+      "scope_key_ciphertext": "391bf974ab93b8bdaedcf62550e093f8a4ec8bc655c0ab502dd0178a419e63fdda219fa0bc0cc5a723677444a1163919",
+      "dek_nonce": "64691c6d3b4c61b6346441b8",
+      "dek_ciphertext": "fdf9d28d8ebdeef64ad8d6cffd876067bdf62b26e8f0e5b64b1dc4823e8b13e5f768239e1aa803429d5a0fbc291265f2",
+      "value_nonce": "688b11330c311f338ab0b947",
+      "value_ciphertext": "964bf9ec9c255bccf762385402c95b57c1d2834eda301646354304"
+    }
+  ]
+}

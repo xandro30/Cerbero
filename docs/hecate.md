@@ -20,7 +20,7 @@ Hécate custodia lo que abre las puertas de Cerbero: los **secretos de terceros*
 
 **Por qué es una pieza aparte:** es el objetivo más valioso de Cerbero. Separarla permite que su raíz viva solo en memoria, que no se exponga nunca y que tenga su propia auditoría, y que el resto de componentes no guarde ningún secreto en claro.
 
-**Cómo se construye:** en Cerbero, para entender cómo funciona por dentro, pero con primitivas de librerías auditadas (`cryptography` y `PyNaCl`) detrás de un port `CryptoProvider`; Shamir viene de `PyCryptodome`, sin auditoría pública ([riesgo aceptado](../DECISIONS.md#riesgos-aceptados)). El primer adapter es software; un adapter de hardware (TPM o YubiKey) encaja en el mismo port.
+**Cómo se construye:** en Cerbero, para entender cómo funciona por dentro, pero con primitivas de librerías auditadas (aws-lc-rs para AES-256-GCM, HKDF y HMAC; libsodium para Argon2id) detrás de un port `CryptoProvider`; Shamir viene de vsss-rs, sin auditoría pública ([riesgo aceptado](../DECISIONS.md#riesgos-aceptados)). El primer adapter es software; un adapter de hardware (TPM o YubiKey) encaja en el mismo port.
 
 ---
 
@@ -135,7 +135,7 @@ stateDiagram-v2
   | `secrets.revoke` · `restore` · `promote` | `hecate secrets revoke\|restore\|promote <ruta> --version <n>` | Sin prueba; llevan `expected_version` |
   | `secrets.destroy` | `hecate secrets destroy <ruta> --version <n> [--with-shares]` | Exige la prueba (frase actual o dos partes) y cuenta en el contador común |
 
-  El valor se lee con `getpass` o de un fichero, nunca de la línea de órdenes. `hecate status` añade los recuentos de secretos caducados y por caducar en 7 días, que se calculan con los metadatos y también responden sellada.
+  El valor se pide sin eco o se lee de un fichero, nunca de la línea de órdenes. `hecate status` añade los recuentos de secretos caducados y por caducar en 7 días, que se calculan con los metadatos y también responden sellada.
 - **Inicialización, una sola vez:** se genera la raíz, el admin fija la frase (mínimo 12 caracteres) y se generan las tres partes de Shamir, que se muestran una vez y se confirman con dos de ellas; hasta confirmar no se guarda nada. La CA raíz offline no la crea la inicialización, sino el alta de identidades. Una vez inicializada, no hay operación para borrarlo todo: volver a empezar es un procedimiento manual (parar Hécate y borrar sus datos).
 - La raíz solo vive en memoria, sin swap ni volcados de memoria. Cada intento de inicializar, desbloquear, sellar o cambiar la protección queda en el registro de accesos. Tras tres fallos seguidos, la espera es de 1, 2, 4 y 8 minutos y después de 15; el contador sobrevive a los reinicios y es común a la frase, las partes y las pruebas para cambiar la protección.
 
@@ -252,19 +252,26 @@ sequenceDiagram
 
 ## 7. Organización interna
 
+Un workspace de Cargo con un crate por capa:
+
 ```text
 hecate/
-├── domain/
-│   ├── secrets/         # Secret y sus versiones, ciclo de vida
-│   ├── keys/            # Key, jerarquía, rotación, salvaguarda al destruir
-│   ├── identity/        # Identity, Certificate, alta, renovación, revocación
-│   ├── access_policy/   # Access Policy, ámbitos, permisos derivados de las declaraciones
-│   └── audit/           # registro de accesos, cadenas, checkpoints
-├── application/         # casos de uso: resolver, renovar, wrap, firmar checkpoint, desbloquear, gestionar
-└── infrastructure/
-    ├── crypto/          # CryptoProvider: adapter de software (cryptography, PyNaCl, PyCryptodome)
-    ├── store/           # event store y proyecciones
-    └── api/             # API interna (mTLS), JWKS, desbloqueo
+├── crates/
+│   ├── domain/              # hecate-domain
+│   │   ├── sealing/         # sellado: frase, partes de Shamir, intentos, protección de la raíz
+│   │   ├── secrets/         # Secret y sus versiones, ciclo de vida
+│   │   ├── keys/            # Key, jerarquía, rotación, salvaguarda al destruir
+│   │   ├── identity/        # Identity, Certificate, alta, renovación, revocación
+│   │   ├── access_policy/   # Access Policy, ámbitos, permisos derivados de las declaraciones
+│   │   └── audit/           # registro de accesos, cadenas, checkpoints
+│   ├── application/         # hecate-application: casos de uso (resolver, renovar, wrap, firmar checkpoint, desbloquear, gestionar)
+│   ├── infrastructure/      # hecate-infrastructure
+│   │   ├── crypto           # CryptoProvider: adapter de software (aws-lc-rs, libsodium, vsss-rs)
+│   │   ├── store/           # event store y proyecciones en SQLite
+│   │   ├── control/         # canal local de administración (desbloqueo y gestión)
+│   │   └── api/             # API interna (mTLS), JWKS
+│   └── cli/                 # hecate-cli: las órdenes y el binario `hecate`
+└── tests/vectors/           # vectores de prueba conocidos (cifrado, datos asociados, eventos y valores)
 ```
 
 | Patrón | Dónde | Por qué |
@@ -336,7 +343,7 @@ Resumen; el detalle y el porqué están en [DECISIONS](../DECISIONS.md#hécate-f
 
 - **Frente a sus referencias:** se construye en Cerbero sin inventar criptografía; frase del admin más Shamir de recuperación; certificados de 3 días; identidad SPIFFE sin SPIRE; JWT ligado al canal mTLS; Hécate firma los checkpoints de todo Cerbero.
 - **Descartado:** IdP con OIDC, OAuth *client credentials*, claves API compartidas, OpenBao / SOPS + age / variables de entorno como almacén, inventar criptografía.
-- **Riesgos aceptados:** Hécate firma sus propios checkpoints (solo lo cubre un anclaje externo); tras un corte de luz no hay avisos hasta desbloquearla; Python no garantiza borrar la raíz de la memoria; ninguna implementación de Shamir tiene una auditoría pública.
+- **Riesgos aceptados:** Hécate firma sus propios checkpoints (solo lo cubre un anclaje externo); tras un corte de luz no hay avisos hasta desbloquearla; la raíz está en memoria mientras Hécate está desbloqueada (los secretos de paso se borran al terminar cada operación); ninguna implementación de Shamir tiene una auditoría pública.
 
 ---
 
