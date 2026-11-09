@@ -1,0 +1,55 @@
+{
+  "generator": "specs/005-hecate-rust/vectors/generate.py",
+  "source": "main@0287c38",
+  "python": "3.15.0",
+  "unicode": "17.0.0",
+  "cases": [
+    {
+      "layer": "root",
+      "protection": "passphrase",
+      "config_version": 1,
+      "aad": "{\"config_version\":1,\"protection\":\"passphrase\",\"purpose\":\"root\"}"
+    },
+    {
+      "layer": "root",
+      "protection": "recovery",
+      "config_version": 12,
+      "aad": "{\"config_version\":12,\"protection\":\"recovery\",\"purpose\":\"root\"}"
+    },
+    {
+      "layer": "scope_key",
+      "identity": "hermes",
+      "key_version": 1,
+      "aad": "{\"identity\":\"hermes\",\"key_version\":1,\"purpose\":\"scope_key\"}"
+    },
+    {
+      "layer": "scope_key",
+      "identity": "tenaro-web",
+      "key_version": 3,
+      "aad": "{\"identity\":\"tenaro-web\",\"key_version\":3,\"purpose\":\"scope_key\"}"
+    },
+    {
+      "layer": "dek",
+      "path": "secret://hermes/telegram/family_bot/bot_token",
+      "version": 3,
+      "scope": "hermes",
+      "key_version": 1,
+      "aad": "{\"key_version\":1,\"path\":\"secret://hermes/telegram/family_bot/bot_token\",\"purpose\":\"dek\",\"scope\":\"hermes\",\"version\":3}"
+    },
+    {
+      "layer": "dek",
+      "path": "secret://tenaro-web/db/password",
+      "version": 100,
+      "scope": "tenaro-web",
+      "key_version": 2,
+      "aad": "{\"key_version\":2,\"path\":\"secret://tenaro-web/db/password\",\"purpose\":\"dek\",\"scope\":\"tenaro-web\",\"version\":100}"
+    },
+    {
+      "layer": "value",
+      "path": "secret://hermes/telegram/family_bot/bot_token",
+      "version": 3,
+      "scope": "hermes",
+      "aad": "{\"path\":\"secret://hermes/telegram/family_bot/bot_token\",\"purpose\":\"secret\",\"scope\":\"hermes\",\"version\":3}"
+    }
+  ]
+}

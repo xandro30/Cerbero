@@ -113,8 +113,8 @@ No hay más desviaciones de lenguaje. Se descartaron `by <d>` (tumbling: se cubr
 |---|---|
 | Hécate firma sus propios checkpoints: quien llegue a la propia Hécate podría reescribirla y volver a firmarla | Solo lo cubre anclar los checkpoints fuera de Cerbero, que queda para más adelante. |
 | Tras un corte de luz de toda la casa, Hécate queda sellada y no hay avisos hasta desbloquearla | Los avisos dependen de secretos que custodia Hécate; Ténaro muestra el estado. |
-| Python no garantiza borrar la raíz de la memoria | Se mitiga más adelante con el adapter de hardware. |
-| Ninguna implementación de Shamir tiene una auditoría pública confirmada, ni en Python (PyCryptodome) ni en Rust (vsss-rs, [ADR 0007](docs/adr/0007-pila-hecate-rust.md)) | Shamir solo protege la clave de recuperación; el algoritmo es pequeño y revisable, y lo cubren pruebas: cualquier pareja de partes reconstruye la clave y una sola parte no revela nada. |
+| La raíz está en memoria mientras Hécate está desbloqueada; los secretos de paso se borran al terminar cada operación, pero pueden quedar copias que el proceso no controla (al moverse los datos, dentro de las librerías y en los búferes del sistema) | Se mitiga más adelante con el adapter de hardware. |
+| Ninguna implementación de Shamir tiene una auditoría pública confirmada, tampoco vsss-rs, la que usa Hécate ([ADR 0007](docs/adr/0007-pila-hecate-rust.md)) | Shamir solo protege la clave de recuperación; el algoritmo es pequeño y revisable, y lo cubren pruebas: cualquier pareja de partes reconstruye la clave y una sola parte no revela nada. |
 
 ---
 

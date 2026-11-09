@@ -1,0 +1,66 @@
+{
+  "generator": "specs/005-hecate-rust/vectors/generate.py",
+  "source": "main@0287c38",
+  "python": "3.15.0",
+  "unicode": "17.0.0",
+  "cases": [
+    {
+      "kind": "fixed",
+      "root": "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20212223242526",
+      "passphrase": "correct horse battery staple",
+      "recovery_key": "5a5b5c5d5e5f606162636465666768696a6b6c6d6e6f70717273747576777879",
+      "passphrase_protection": {
+        "version": 1,
+        "kdf": "argon2id",
+        "kdf_opslimit": 1,
+        "kdf_memlimit": 8192,
+        "salt": "1e1f202122232425262728292a2b2c2d",
+        "aead": "AES-256-GCM",
+        "nonce": "3c3d3e3f4041424344454647",
+        "ciphertext": "a8c843ddbe3f35c513ed2c66d5092a4964ca618c91c7140aed8a7b7ec85461eabf0f2b56c3255232dfe51bc82c4b176f",
+        "aad": "{\"config_version\":1,\"protection\":\"passphrase\",\"purpose\":\"root\"}",
+        "stored": "{\"aead\": \"AES-256-GCM\", \"ciphertext\": \"a8c843ddbe3f35c513ed2c66d5092a4964ca618c91c7140aed8a7b7ec85461eabf0f2b56c3255232dfe51bc82c4b176f\", \"kdf\": \"argon2id\", \"kdf_memlimit\": 8192, \"kdf_opslimit\": 1, \"nonce\": \"3c3d3e3f4041424344454647\", \"salt\": \"1e1f202122232425262728292a2b2c2d\", \"version\": 1}"
+      },
+      "recovery_protection": {
+        "version": 1,
+        "share_set_id": "82838485",
+        "threshold": 2,
+        "share_count": 3,
+        "aead": "AES-256-GCM",
+        "nonce": "8c8d8e8f9091929394959697",
+        "ciphertext": "915fb28e0af2ad22758052e5798a31511953c2c17caff1908a850b88abd2a0c0e15921ed3ff938be4135557a3c1e7c1c",
+        "aad": "{\"config_version\":1,\"protection\":\"recovery\",\"purpose\":\"root\"}",
+        "stored": "{\"aead\": \"AES-256-GCM\", \"ciphertext\": \"915fb28e0af2ad22758052e5798a31511953c2c17caff1908a850b88abd2a0c0e15921ed3ff938be4135557a3c1e7c1c\", \"nonce\": \"8c8d8e8f9091929394959697\", \"share_count\": 3, \"share_set_id\": \"82838485\", \"threshold\": 2, \"version\": 1}"
+      }
+    },
+    {
+      "kind": "random",
+      "root": "376c72413df2da37e7aee668ff4cd51bda17feed73e352474b361b60858ba96f",
+      "passphrase": "correct horse battery staple",
+      "recovery_key": "8bb7dd9a6f2efb270dd72a6d06f6fd1e17036544c9f91497ded8b2d48359be66",
+      "passphrase_protection": {
+        "version": 3,
+        "kdf": "argon2id",
+        "kdf_opslimit": 1,
+        "kdf_memlimit": 8192,
+        "salt": "d32ee3e35b7c60f61b9246da02d552b2",
+        "aead": "AES-256-GCM",
+        "nonce": "23853704d26a2756c794d171",
+        "ciphertext": "b7b7aa126fbc49f9d0b00c0584b08949308866fd3560bd06ea6e8d62d0a55d141e6b1d1de2decade07def52221718f48",
+        "aad": "{\"config_version\":3,\"protection\":\"passphrase\",\"purpose\":\"root\"}",
+        "stored": "{\"aead\": \"AES-256-GCM\", \"ciphertext\": \"b7b7aa126fbc49f9d0b00c0584b08949308866fd3560bd06ea6e8d62d0a55d141e6b1d1de2decade07def52221718f48\", \"kdf\": \"argon2id\", \"kdf_memlimit\": 8192, \"kdf_opslimit\": 1, \"nonce\": \"23853704d26a2756c794d171\", \"salt\": \"d32ee3e35b7c60f61b9246da02d552b2\", \"version\": 3}"
+      },
+      "recovery_protection": {
+        "version": 3,
+        "share_set_id": "88f00205",
+        "threshold": 2,
+        "share_count": 3,
+        "aead": "AES-256-GCM",
+        "nonce": "0e027648726b4c1ea6a47913",
+        "ciphertext": "80550e311a9fdee40eddd88636402d48e63f73a8a36cb22329837ce4c6f546b55683958924143f0545878125553b6e84",
+        "aad": "{\"config_version\":3,\"protection\":\"recovery\",\"purpose\":\"root\"}",
+        "stored": "{\"aead\": \"AES-256-GCM\", \"ciphertext\": \"80550e311a9fdee40eddd88636402d48e63f73a8a36cb22329837ce4c6f546b55683958924143f0545878125553b6e84\", \"nonce\": \"0e027648726b4c1ea6a47913\", \"share_count\": 3, \"share_set_id\": \"88f00205\", \"threshold\": 2, \"version\": 3}"
+      }
+    }
+  ]
+}

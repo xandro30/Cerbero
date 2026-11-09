@@ -1,0 +1,58 @@
+{
+  "generator": "specs/005-hecate-rust/vectors/generate.py",
+  "source": "main@0287c38",
+  "python": "3.15.0",
+  "unicode": "17.0.0",
+  "cases": [
+    {
+      "type": "SecretCreated",
+      "data": "{\"expires_at\": \"2027-06-01T09:00:00+02:00\", \"max_versions\": 10, \"owner\": \"hermes\", \"path\": \"secret://hermes/telegram/family_bot/bot_token\", \"rotate_every\": \"cada 30 d\\u00edas\", \"value_type\": \"string\"}",
+      "at": "2026-11-08T12:30:15.123456+00:00"
+    },
+    {
+      "type": "SecretCreated",
+      "data": "{\"expires_at\": null, \"max_versions\": 2, \"owner\": \"tenaro-web\", \"path\": \"secret://tenaro-web/db/password\", \"rotate_every\": null, \"value_type\": \"json\"}",
+      "at": "2026-11-08T12:30:00+00:00"
+    },
+    {
+      "type": "VersionAdded",
+      "data": "{\"fingerprint\": \"1a2b-3c4d-5e6f-7a8b\", \"key_version\": 1, \"version\": 1}",
+      "at": "2026-11-08T12:30:15.123456+00:00"
+    },
+    {
+      "type": "VersionDeprecated",
+      "data": "{\"version\": 1}",
+      "at": "2026-11-08T12:30:15.123456+00:00"
+    },
+    {
+      "type": "VersionRevoked",
+      "data": "{\"version\": 2}",
+      "at": "2026-11-08T12:30:15.123456+00:00"
+    },
+    {
+      "type": "VersionRestored",
+      "data": "{\"version\": 3}",
+      "at": "2026-11-08T12:30:15.123456+00:00"
+    },
+    {
+      "type": "VersionPromoted",
+      "data": "{\"version\": 4}",
+      "at": "2026-11-08T12:30:15.123456+00:00"
+    },
+    {
+      "type": "VersionDestroyed",
+      "data": "{\"reason\": \"admin\", \"version\": 5}",
+      "at": "2026-11-08T12:30:15.123456+00:00"
+    },
+    {
+      "type": "VersionDestroyed",
+      "data": "{\"reason\": \"max_versions\", \"version\": 6}",
+      "at": "2026-11-08T12:30:00+00:00"
+    },
+    {
+      "type": "ScopeKeyCreated",
+      "data": "{\"identity\": \"hermes\", \"key_version\": 1}",
+      "at": "2026-11-08T12:30:15.123456+00:00"
+    }
+  ]
+}
