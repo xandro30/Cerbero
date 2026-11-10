@@ -1,29 +1,51 @@
 //! The `hecate` CLI (contracts/cli.md): its commands take a terminal, so the tests drive them with a
 //! scripted one (research R15).
 
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::ops::Deref;
-use std::path::PathBuf;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use hecate_application::ca::service::{CaService, random_serial};
+use hecate_application::ca::settings::CaSettings;
+use hecate_application::identity::service::IdentityService;
+use hecate_application::identity::settings::IdentitySettings;
+use hecate_application::ports::{CertificateProfile, PkiProvider};
 use hecate_application::sealing::service::{INIT_WARNING, SealingService};
 use hecate_application::sealing::settings::SealingSettings;
 use hecate_application::secrets::service::SecretsService;
 use hecate_application::secrets::settings::SecretsSettings;
+use hecate_domain::identity::names::{RootFingerprint, TrustDomain};
+use hecate_domain::pem;
+use hecate_infrastructure::api::routes::{refusals, routes};
+use hecate_infrastructure::api::server::SealedCheck;
+use hecate_infrastructure::api::supervisor::ApiSupervisor;
+use hecate_infrastructure::backup::{open_backup, seal_backup};
+use hecate_infrastructure::call_token::JwtCallTokenVerifier;
 use hecate_infrastructure::clock::SystemClock;
 use hecate_infrastructure::config::{ConfigError, HecateConfig};
 use hecate_infrastructure::control::client::ControlClient;
-use hecate_infrastructure::control::operations::request_handler;
+use hecate_infrastructure::control::operations::{
+    IdentityOperations, request_handler_with_identities,
+};
 use hecate_infrastructure::control::protocol::erase;
 use hecate_infrastructure::control::server::ControlServer;
 use hecate_infrastructure::crypto::SoftwareCryptoProvider;
 use hecate_infrastructure::logs::configure_logging;
+use hecate_infrastructure::pki::{RcgenPki, RootCaKey};
 use hecate_infrastructure::process::harden_process;
 use hecate_infrastructure::signals::stop_requested;
+use hecate_infrastructure::store::OpenError;
+use hecate_infrastructure::store::ca::SqliteIdentityStore;
+use hecate_infrastructure::store::identity::SqliteEnrollAttempts;
 use hecate_infrastructure::store::sealing::{SqliteAccessLog, SqliteSealRepository};
 use hecate_infrastructure::store::secrets::SqliteSecretStore;
+use hecate_infrastructure::tasks;
 use serde_json::{Value, json};
+use time::OffsetDateTime;
 use zeroize::Zeroizing;
 
 /// The user cancelled a prompt (end of input or Ctrl-C), like `EOFError` or `KeyboardInterrupt`.
@@ -75,6 +97,26 @@ pub enum Command {
         #[command(subcommand)]
         command: SecretsCommand,
     },
+    /// Manage the CA of Cerbero
+    Ca {
+        #[command(subcommand)]
+        command: CaCommand,
+    },
+    /// Manage the single-use tokens with which components enroll
+    Tokens {
+        #[command(subcommand)]
+        command: TokensCommand,
+    },
+    /// Manage the identities of the components
+    Identities {
+        #[command(subcommand)]
+        command: IdentitiesCommand,
+    },
+    /// Manage the certificates of the components and of Hécate
+    Certificates {
+        #[command(subcommand)]
+        command: CertificatesCommand,
+    },
     /// Seal now: the root leaves memory
     Seal,
     /// Show the seal state
@@ -98,6 +140,72 @@ pub enum SharesCommand {
         /// Prove with two current shares
         #[arg(long)]
         with_shares: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CaCommand {
+    /// Create the CA: the root CA key stays with you, the intermediate goes to Hécate
+    Create {
+        /// The trust domain of the SPIFFE IDs, such as cerbero.home
+        #[arg(long)]
+        trust_domain: String,
+        /// Where to write the copy of the root CA key, protected with the CA passphrase
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Replace the whole CA: a new root CA and intermediate, with a new CA passphrase
+    Replace {
+        /// Where to write the copy of the new root CA key, protected with the new CA passphrase
+        #[arg(long)]
+        out: PathBuf,
+        /// Prove with two recovery shares instead of the passphrase
+        #[arg(long)]
+        with_shares: bool,
+    },
+    /// Renew the intermediate before it expires, with the copy of the root CA key
+    RenewIntermediate {
+        /// The copy of the root CA key that `hecate ca create` wrote
+        #[arg(long)]
+        root_key: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TokensCommand {
+    /// Create a token for an identity; it is shown only once
+    Create { identity: String },
+    /// List the pending tokens, without their value
+    List,
+    /// Annul a pending token
+    Annul { token_id: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum IdentitiesCommand {
+    /// List the enrolled identities with the end of their latest certificate
+    List,
+    /// Show an identity and its certificates, without keys
+    Get { identity: String },
+    /// Disable an identity: no renewals, no call keys, no tokens
+    Disable {
+        identity: String,
+        /// Also revoke its valid certificates at once: they enter the revocation list
+        #[arg(long)]
+        urgent: bool,
+    },
+    /// Enable a disabled identity: it enrolls again with a new token
+    Enable { identity: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CertificatesCommand {
+    /// Revoke a certificate: by default it only stops renewing
+    Revoke {
+        serial: String,
+        /// Revoke it at once: it enters the revocation list and its call key stops signing
+        #[arg(long)]
+        urgent: bool,
     },
 }
 
@@ -195,6 +303,20 @@ pub fn execute(command: Command, config: &HecateConfig, terminal: &mut dyn Termi
         Command::Shares {
             command: SharesCommand::Rekey { with_shares },
         } => shares_rekey(config, terminal, with_shares),
+        Command::Ca {
+            command: CaCommand::Create { trust_domain, out },
+        } => ca_create(config, terminal, &trust_domain, &out),
+        Command::Ca {
+            command: CaCommand::RenewIntermediate { root_key },
+        } => ca_renew_intermediate(config, terminal, &root_key),
+        Command::Ca {
+            command: CaCommand::Replace { out, with_shares },
+        } => ca_replace(config, terminal, &out, with_shares),
+        Command::Tokens { command } => Ok(tokens(config, terminal, command)),
+        Command::Identities { command } => Ok(identities(config, terminal, command)),
+        Command::Certificates {
+            command: CertificatesCommand::Revoke { serial, urgent },
+        } => Ok(certificates_revoke(config, terminal, &serial, urgent)),
         Command::Seal => Ok(seal(config, terminal)),
         Command::Status => Ok(status(config, terminal)),
         Command::Secrets { command } => secrets(config, terminal, command),
@@ -277,7 +399,637 @@ fn status(config: &HecateConfig, terminal: &mut dyn Terminal) -> i32 {
             shown(field(&data, "secrets_expiring_soon"))
         ));
     }
+    if let Some(ca) = data.get("ca") {
+        if !truthy(field(ca, "exists")) {
+            terminal.out("ca: none");
+            return 0;
+        }
+        terminal.out(&format!(
+            "ca: {} {}",
+            shown(field(ca, "trust_domain")),
+            shown(field(ca, "root_fingerprint"))
+        ));
+        let own = field(ca, "hecate_certificate");
+        if !own.is_null() {
+            terminal.out(&format!(
+                "hecate certificate {} until {}",
+                shown(field(own, "serial")),
+                shown(field(own, "not_after"))
+            ));
+        }
+        let days_left = field(ca, "intermediate_days_left");
+        if !days_left.is_null() {
+            terminal.out(&format!("intermediate days left: {}", shown(days_left)));
+        }
+        if let Some(expiring) = ca.get("identities_expiring_24h") {
+            terminal.out(&format!(
+                "identities expiring within 24h: {}",
+                shown(expiring)
+            ));
+        }
+        if let Some(suspicious) = ca.get("suspicious_renewals_24h") {
+            terminal.out(&format!(
+                "suspicious renewals within 24h: {}",
+                shown(suspicious)
+            ));
+        }
+        if let Some(throttled) = ca.get("enrollment_throttled") {
+            let answer = if truthy(throttled) { "yes" } else { "no" };
+            terminal.out(&format!("enrollment throttled: {answer}"));
+        }
+    }
     0
+}
+
+/// `hecate tokens` (contracts/cli.md): the token is printed once and never again.
+fn tokens(config: &HecateConfig, terminal: &mut dyn Terminal, command: TokensCommand) -> i32 {
+    match command {
+        TokensCommand::Create { identity } => {
+            let Some(data) = call(
+                config,
+                terminal,
+                "tokens.create",
+                json!({"identity": identity}),
+            ) else {
+                return 1;
+            };
+            // Written from a buffer that is zeroed when dropped, like the shares.
+            let token = field(&data, "token").as_str().unwrap_or_default();
+            let mut line = Zeroizing::new(String::with_capacity(6 + token.len()));
+            line.push_str("token ");
+            line.push_str(token);
+            terminal.out(&line);
+            terminal.out(&format!(
+                "id {} identity {} expires {}",
+                shown(field(&data, "token_id")),
+                shown(field(&data, "identity")),
+                shown(field(&data, "expires_at"))
+            ));
+            terminal.out("this token is shown only once");
+        }
+        TokensCommand::List => {
+            let Some(data) = call(config, terminal, "tokens.list", json!({})) else {
+                return 1;
+            };
+            let pending = field(&data, "tokens")
+                .as_array()
+                .map_or(&[][..], Vec::as_slice);
+            if pending.is_empty() {
+                terminal.out("no pending tokens");
+            }
+            for token in pending {
+                terminal.out(&format!(
+                    "{} {} expires {}",
+                    shown(field(token, "token_id")),
+                    shown(field(token, "identity")),
+                    shown(field(token, "expires_at"))
+                ));
+            }
+        }
+        TokensCommand::Annul { token_id } => {
+            let Some(data) = call(
+                config,
+                terminal,
+                "tokens.annul",
+                json!({"token_id": token_id}),
+            ) else {
+                return 1;
+            };
+            terminal.out(&format!("annulled {}", shown(field(&data, "token_id"))));
+        }
+    }
+    0
+}
+
+fn items(data: &Value, key: &str) -> Vec<Value> {
+    field(data, key).as_array().cloned().unwrap_or_default()
+}
+
+/// `hecate identities` (contracts/cli.md).
+fn identities(
+    config: &HecateConfig,
+    terminal: &mut dyn Terminal,
+    command: IdentitiesCommand,
+) -> i32 {
+    match command {
+        IdentitiesCommand::List => {
+            let Some(data) = call(config, terminal, "identities.list", json!({})) else {
+                return 1;
+            };
+            let listed = items(&data, "identities");
+            if listed.is_empty() {
+                terminal.out("no identities");
+            }
+            for identity in &listed {
+                terminal.out(&format!(
+                    "{} {} certificate until {}",
+                    shown(field(identity, "identity")),
+                    shown(field(identity, "status")),
+                    shown(field(identity, "certificate_not_after"))
+                ));
+            }
+        }
+        IdentitiesCommand::Get { identity } => {
+            let Some(data) = call(
+                config,
+                terminal,
+                "identities.get",
+                json!({"identity": identity}),
+            ) else {
+                return 1;
+            };
+            terminal.out(&format!(
+                "identity {} {}",
+                shown(field(&data, "identity")),
+                shown(field(&data, "status"))
+            ));
+            for certificate in &items(&data, "certificates") {
+                let renewable = if truthy(field(certificate, "renewable")) {
+                    "yes"
+                } else {
+                    "no"
+                };
+                terminal.out(&format!(
+                    "{} {} renewable {renewable} {} {}",
+                    shown(field(certificate, "serial")),
+                    shown(field(certificate, "state")),
+                    shown(field(certificate, "not_before")),
+                    shown(field(certificate, "not_after"))
+                ));
+            }
+        }
+        IdentitiesCommand::Disable { identity, urgent } => {
+            let Some(data) = call(
+                config,
+                terminal,
+                "identities.disable",
+                json!({"identity": identity, "urgent": urgent}),
+            ) else {
+                return 1;
+            };
+            terminal.out(&format!("disabled {}", shown(field(&data, "identity"))));
+            if urgent {
+                let revoked = items(&data, "revoked").len();
+                terminal.out(&format!("revoked {revoked} certificates"));
+            }
+        }
+        IdentitiesCommand::Enable { identity } => {
+            let Some(data) = call(
+                config,
+                terminal,
+                "identities.enable",
+                json!({"identity": identity}),
+            ) else {
+                return 1;
+            };
+            terminal.out(&format!("enabled {}", shown(field(&data, "identity"))));
+        }
+    }
+    0
+}
+
+/// `hecate certificates revoke` (contracts/cli.md): Hécate's certificate comes back replaced.
+fn certificates_revoke(
+    config: &HecateConfig,
+    terminal: &mut dyn Terminal,
+    serial: &str,
+    urgent: bool,
+) -> i32 {
+    let Some(data) = call(
+        config,
+        terminal,
+        "certificates.revoke",
+        json!({"serial": serial, "urgent": urgent}),
+    ) else {
+        return 1;
+    };
+    let urgency = if urgent { " urgent" } else { "" };
+    terminal.out(&format!(
+        "revoked {}{urgency}",
+        shown(field(&data, "serial"))
+    ));
+    let reissued = field(&data, "reissued");
+    if !reissued.is_null() {
+        terminal.out(&format!("reissued {}", shown(reissued)));
+    }
+    0
+}
+
+const CA_PASSPHRASE_PROMPT: &str = "CA passphrase (nothing is echoed): ";
+const COPY_DOES_NOT_OPEN: &str = "error: the saved copy does not open with that passphrase";
+
+/// The operations that end a ceremony that creates a root CA: the creation or the replacement.
+struct RootCeremony {
+    confirm: &'static str,
+    abort: &'static str,
+}
+
+const CREATE: RootCeremony = RootCeremony {
+    confirm: "ca.create.confirm",
+    abort: "ca.create.abort",
+};
+const REPLACE: RootCeremony = RootCeremony {
+    confirm: "ca.replace.confirm",
+    abort: "ca.replace.abort",
+};
+
+/// A ceremony of the CA that Hécate keeps pending: aborting it leaves its reason in the access
+/// log, and the copy that this run wrote goes too, since its CA will not exist.
+struct PendingCeremony<'a> {
+    config: &'a HecateConfig,
+    abort_op: &'static str,
+    ceremony_id: Value,
+    out: &'a Path,
+    written: bool,
+}
+
+impl PendingCeremony<'_> {
+    fn abort(&self, terminal: &mut dyn Terminal, reason: &str) {
+        if self.written {
+            let _ = fs::remove_file(self.out);
+        }
+        call(
+            self.config,
+            terminal,
+            self.abort_op,
+            json!({"ceremony_id": self.ceremony_id, "reason": reason}),
+        );
+    }
+}
+
+/// Writes the copy in a new file that only the user can read; an existing file is never replaced.
+fn write_copy(out: &Path, copy: &str) -> io::Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(out)?;
+    file.write_all(copy.as_bytes())?;
+    file.sync_all()
+}
+
+/// Whether the copy at `path` opens with the passphrase and holds the key of the root CA.
+fn copy_opens(
+    crypto: &SoftwareCryptoProvider,
+    path: &str,
+    passphrase: &str,
+    root_key: &RootCaKey,
+    fingerprint: &RootFingerprint,
+) -> Result<bool, String> {
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("error: cannot read {path}: {}", unreadable(&error)))?;
+    let Ok(pkcs8) = open_backup(crypto, &text, passphrase, fingerprint) else {
+        return Ok(false);
+    };
+    let opened = RootCaKey::from_pkcs8(pkcs8).and_then(|key| key.public_key());
+    Ok(matches!((opened, root_key.public_key()), (Ok(opened), Ok(root)) if opened == root))
+}
+
+/// The root CA and the intermediate that Hécate asks for, signed with a new root CA key.
+fn sign_ca(
+    trust_domain: &str,
+    request: &str,
+    crypto: &SoftwareCryptoProvider,
+) -> Result<(RootCaKey, Vec<u8>, Vec<u8>), String> {
+    let failed = |error: hecate_application::ports::PkiError| format!("error: {error}");
+    let trust_domain =
+        TrustDomain::parse(trust_domain).map_err(|error| format!("error: {error}"))?;
+    let now = OffsetDateTime::now_utc();
+    let root_key = RootCaKey::generate().map_err(failed)?;
+    let root = root_key
+        .root_certificate(&trust_domain, &random_serial(crypto), now)
+        .map_err(failed)?;
+    let intermediate = root_key
+        .sign_intermediate(&root, request, &random_serial(crypto), now)
+        .map_err(failed)?;
+    Ok((root_key, root, intermediate))
+}
+
+fn refuse_existing(terminal: &mut dyn Terminal, out: &Path) -> bool {
+    let exists = fs::symlink_metadata(out).is_ok();
+    if exists {
+        terminal.err(&format!(
+            "error: {} already exists; it is not overwritten",
+            out.display()
+        ));
+    }
+    exists
+}
+
+/// What `ca create` and `ca replace` do after `begin`: a new root CA signs the intermediate, its
+/// copy is written and a saved copy is checked with the passphrase before confirming. Returns the
+/// data of the confirmation, or `None` once the error is printed and the ceremony aborted.
+fn root_ceremony(
+    config: &HecateConfig,
+    terminal: &mut dyn Terminal,
+    ops: &RootCeremony,
+    (begun, trust_domain): (&Value, &str),
+    passphrase: Zeroizing<String>,
+    out: &Path,
+) -> Result<Option<ErasedJson>, Cancelled> {
+    let mut ceremony = PendingCeremony {
+        config,
+        abort_op: ops.abort,
+        ceremony_id: field(begun, "ceremony_id").clone(),
+        out,
+        written: false,
+    };
+    let crypto = SoftwareCryptoProvider::new();
+    let request = shown(field(begun, "intermediate_csr"));
+    let (root_key, root, intermediate) = match sign_ca(trust_domain, &request, &crypto) {
+        Ok(signed) => signed,
+        Err(message) => {
+            terminal.err(&message);
+            ceremony.abort(terminal, "cancelled");
+            return Ok(None);
+        }
+    };
+    let fingerprint = RootFingerprint::of_der(&root);
+    let written = seal_backup(
+        &crypto,
+        root_key.pkcs8(),
+        &passphrase,
+        config.kdf,
+        &fingerprint,
+    )
+    .map_err(|error| error.to_string())
+    .and_then(|copy| {
+        write_copy(out, &copy)
+            .map_err(|error| format!("cannot write {}: {}", out.display(), unreadable(&error)))
+    });
+    drop(passphrase);
+    if let Err(message) = written {
+        terminal.err(&format!("error: {message}"));
+        ceremony.abort(terminal, "cancelled");
+        return Ok(None);
+    }
+    ceremony.written = true;
+    terminal.out(&format!(
+        "root key saved to {}; store it on two separate media",
+        out.display()
+    ));
+    let answers = terminal
+        .ask("path of a saved copy to verify: ")
+        .and_then(|path| Ok((path, terminal.ask_secret(CA_PASSPHRASE_PROMPT)?)));
+    let (path, again) = match answers {
+        Ok(answers) => answers,
+        Err(Cancelled) => {
+            ceremony.abort(terminal, "cancelled");
+            return Err(Cancelled);
+        }
+    };
+    match copy_opens(&crypto, path.trim(), &again, &root_key, &fingerprint) {
+        Ok(true) => {}
+        Ok(false) => {
+            terminal.err(COPY_DOES_NOT_OPEN);
+            ceremony.abort(terminal, "backup_check_failed");
+            return Ok(None);
+        }
+        Err(message) => {
+            terminal.err(&message);
+            ceremony.abort(terminal, "backup_check_failed");
+            return Ok(None);
+        }
+    }
+    drop(again);
+    let confirmed = call(
+        config,
+        terminal,
+        ops.confirm,
+        json!({
+            "ceremony_id": ceremony.ceremony_id,
+            "root_certificate": pem::encode("CERTIFICATE", &root),
+            "intermediate_certificate": pem::encode("CERTIFICATE", &intermediate),
+        }),
+    );
+    if confirmed.is_none() {
+        ceremony.abort(terminal, "cancelled");
+    }
+    Ok(confirmed)
+}
+
+/// `hecate ca create` (contracts/cli.md): the root CA key never leaves this process, Hécate only
+/// receives certificates, and the CA exists only once a saved copy opens with the passphrase.
+fn ca_create(
+    config: &HecateConfig,
+    terminal: &mut dyn Terminal,
+    trust_domain: &str,
+    out: &Path,
+) -> Result<i32, Cancelled> {
+    if refuse_existing(terminal, out) {
+        return Ok(1);
+    }
+    let passphrase = terminal.ask_secret(CA_PASSPHRASE_PROMPT)?;
+    let Some(begun) = call(
+        config,
+        terminal,
+        "ca.create.begin",
+        json!({"trust_domain": trust_domain, "ca_passphrase": passphrase.as_str()}),
+    ) else {
+        return Ok(1);
+    };
+    let Some(created) = root_ceremony(
+        config,
+        terminal,
+        &CREATE,
+        (&begun, trust_domain),
+        passphrase,
+        out,
+    )?
+    else {
+        return Ok(1);
+    };
+    terminal.out(&format!(
+        "created ca for {}",
+        shown(field(&created, "trust_domain"))
+    ));
+    terminal.out(&format!(
+        "root fingerprint {}",
+        shown(field(&created, "root_fingerprint"))
+    ));
+    Ok(0)
+}
+
+/// The trust domain that the request of the new intermediate names.
+fn trust_domain_of(request: &str) -> Result<String, String> {
+    let read = RcgenPki::new()
+        .read_request(request)
+        .map_err(|error| format!("error: {error}"))?;
+    match read
+        .common_name
+        .as_deref()
+        .and_then(CertificateProfile::intermediate_named)
+    {
+        Some(CertificateProfile::Intermediate { trust_domain, .. }) => Ok(trust_domain.to_string()),
+        _ => Err("error: the request is not for an intermediate".to_string()),
+    }
+}
+
+/// `hecate ca replace` (contracts/cli.md): a proof and the new CA passphrase, then the same
+/// exchange as `ca create`; the trust domain stays the one of the CA.
+fn ca_replace(
+    config: &HecateConfig,
+    terminal: &mut dyn Terminal,
+    out: &Path,
+    with_shares: bool,
+) -> Result<i32, Cancelled> {
+    if refuse_existing(terminal, out) {
+        return Ok(1);
+    }
+    let proof = ask_proof(terminal, with_shares)?;
+    let passphrase = terminal.ask_secret(CA_PASSPHRASE_PROMPT)?;
+    let begun = call(
+        config,
+        terminal,
+        "ca.replace.begin",
+        json!({"proof": &*proof, "ca_passphrase": passphrase.as_str()}),
+    );
+    drop(proof);
+    let Some(begun) = begun else {
+        return Ok(1);
+    };
+    let trust_domain = match trust_domain_of(&shown(field(&begun, "intermediate_csr"))) {
+        Ok(trust_domain) => trust_domain,
+        Err(message) => {
+            terminal.err(&message);
+            call(
+                config,
+                terminal,
+                REPLACE.abort,
+                json!({"ceremony_id": field(&begun, "ceremony_id"), "reason": "cancelled"}),
+            );
+            return Ok(1);
+        }
+    };
+    let Some(replaced) = root_ceremony(
+        config,
+        terminal,
+        &REPLACE,
+        (&begun, &trust_domain),
+        passphrase,
+        out,
+    )?
+    else {
+        return Ok(1);
+    };
+    terminal.out(&format!(
+        "replaced ca for {} generation {}",
+        shown(field(&replaced, "trust_domain")),
+        shown(field(&replaced, "generation"))
+    ));
+    terminal.out(&format!(
+        "root fingerprint {}",
+        shown(field(&replaced, "root_fingerprint"))
+    ));
+    Ok(0)
+}
+
+const RENEWAL_DOES_NOT_OPEN: &str =
+    "error: the copy does not open: wrong passphrase or the copy of another CA";
+const NOT_THE_ROOT_KEY: &str = "error: the copy does not hold the key of the root CA of Hécate";
+
+/// Discards the pending renewal of the intermediate, leaving its reason in the access log.
+fn abort_renewal(
+    config: &HecateConfig,
+    terminal: &mut dyn Terminal,
+    ceremony_id: &Value,
+    reason: &str,
+) {
+    call(
+        config,
+        terminal,
+        "ca.intermediate.abort",
+        json!({"ceremony_id": ceremony_id, "reason": reason}),
+    );
+}
+
+/// The new intermediate signed with the root CA key of the copy, or the reason of the abort and
+/// what to print. A copy that does not open does not say whether the passphrase is wrong or it
+/// is the copy of another CA (contracts/formats.md).
+fn sign_renewal(
+    crypto: &SoftwareCryptoProvider,
+    copy: &str,
+    passphrase: &str,
+    begun: &Value,
+) -> Result<Vec<u8>, (&'static str, String)> {
+    let root = pem::single(&shown(field(begun, "root_certificate")), "CERTIFICATE")
+        .map_err(|error| ("cancelled", format!("error: {error}")))?;
+    let pkcs8 = open_backup(crypto, copy, passphrase, &RootFingerprint::of_der(&root))
+        .map_err(|_| ("wrong_passphrase", RENEWAL_DOES_NOT_OPEN.to_string()))?;
+    let wrong_key = || ("wrong_root_key", NOT_THE_ROOT_KEY.to_string());
+    let key = RootCaKey::from_pkcs8(pkcs8).map_err(|_| wrong_key())?;
+    let root_info = RcgenPki::new()
+        .read_certificate(&root)
+        .map_err(|error| ("cancelled", format!("error: {error}")))?;
+    if key.public_key().map_err(|_| wrong_key())? != root_info.public_key {
+        return Err(wrong_key());
+    }
+    key.sign_intermediate(
+        &root,
+        &shown(field(begun, "intermediate_csr")),
+        &random_serial(crypto),
+        OffsetDateTime::now_utc(),
+    )
+    .map_err(|error| ("cancelled", format!("error: {error}")))
+}
+
+/// `hecate ca renew-intermediate` (contracts/cli.md): the copy of the root CA key opens only in
+/// this process, signs the new intermediate and is erased; Hécate only receives the certificate.
+fn ca_renew_intermediate(
+    config: &HecateConfig,
+    terminal: &mut dyn Terminal,
+    root_key: &Path,
+) -> Result<i32, Cancelled> {
+    let copy = match fs::read_to_string(root_key) {
+        Ok(text) => Zeroizing::new(text),
+        Err(error) => {
+            terminal.err(&format!(
+                "error: cannot read {}: {}",
+                root_key.display(),
+                unreadable(&error)
+            ));
+            return Ok(1);
+        }
+    };
+    let Some(begun) = call(config, terminal, "ca.intermediate.begin", json!({})) else {
+        return Ok(1);
+    };
+    let ceremony_id = field(&begun, "ceremony_id").clone();
+    let passphrase = match terminal.ask_secret(CA_PASSPHRASE_PROMPT) {
+        Ok(passphrase) => passphrase,
+        Err(Cancelled) => {
+            abort_renewal(config, terminal, &ceremony_id, "cancelled");
+            return Err(Cancelled);
+        }
+    };
+    let signed = sign_renewal(&SoftwareCryptoProvider::new(), &copy, &passphrase, &begun);
+    drop(passphrase);
+    let certificate = match signed {
+        Ok(certificate) => certificate,
+        Err((reason, message)) => {
+            terminal.err(&message);
+            abort_renewal(config, terminal, &ceremony_id, reason);
+            return Ok(1);
+        }
+    };
+    let Some(renewed) = call(
+        config,
+        terminal,
+        "ca.intermediate.confirm",
+        json!({
+            "ceremony_id": ceremony_id,
+            "intermediate_certificate": pem::encode("CERTIFICATE", &certificate),
+        }),
+    ) else {
+        abort_renewal(config, terminal, &ceremony_id, "cancelled");
+        return Ok(1);
+    };
+    terminal.out(&format!(
+        "renewed intermediate version {} until {}",
+        shown(field(&renewed, "intermediate_version")),
+        shown(field(&renewed, "intermediate_not_after"))
+    ));
+    Ok(0)
 }
 
 /// Why a file cannot be read, in words that do not depend on the platform.
@@ -715,7 +1467,7 @@ fn seal(config: &HecateConfig, terminal: &mut dyn Terminal) -> i32 {
 }
 
 /// Runs Hécate, always sealed, until SIGINT or SIGTERM: the root is released, then the socket
-/// closes, and the exit is 0.
+/// closes, and the exit is 0. With a CA, the API listens while Hécate's certificate is valid.
 fn serve(config: &HecateConfig, terminal: &mut dyn Terminal) -> i32 {
     configure_logging();
     if let Err(error) = config.prepare() {
@@ -727,13 +1479,18 @@ fn serve(config: &HecateConfig, terminal: &mut dyn Terminal) -> i32 {
     }
     harden_process();
     let db_path = config.db_path();
-    let (repo, access_log, store) = match (
-        SqliteSealRepository::open(&db_path),
-        SqliteAccessLog::open(&db_path),
-        SqliteSecretStore::open(&db_path),
-    ) {
-        (Ok(repo), Ok(access_log), Ok(store)) => (repo, access_log, store),
-        (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
+    let opened = (|| -> Result<_, OpenError> {
+        Ok((
+            SqliteSealRepository::open(&db_path)?,
+            SqliteAccessLog::open(&db_path)?,
+            SqliteSecretStore::open(&db_path)?,
+            SqliteIdentityStore::open(&db_path)?,
+            SqliteEnrollAttempts::open(&db_path)?,
+        ))
+    })();
+    let (repo, access_log, store, identity_store, enroll_attempts) = match opened {
+        Ok(opened) => opened,
+        Err(error) => {
             terminal.err(&format!(
                 "error: cannot open {}: {error}",
                 db_path.display()
@@ -753,17 +1510,74 @@ fn serve(config: &HecateConfig, terminal: &mut dyn Terminal) -> i32 {
         service.clone(),
         Arc::new(store),
         Arc::new(SoftwareCryptoProvider::new()),
-        access_log,
+        access_log.clone(),
         Arc::new(SystemClock),
         SecretsSettings::default(),
     ));
-    let handler = Arc::new(request_handler(service.clone(), Some(secrets)));
+    let identity_store = Arc::new(identity_store);
+    let pki = Arc::new(RcgenPki::new());
+    let ca = Arc::new(CaService::new(
+        service.clone(),
+        identity_store.clone(),
+        pki.clone(),
+        Arc::new(SoftwareCryptoProvider::new()),
+        access_log.clone(),
+        Arc::new(SystemClock),
+        CaSettings::new(config.cert_lifetime_hours),
+    ));
+    let identities = Arc::new(IdentityService::new(
+        service.clone(),
+        ca.clone(),
+        identity_store,
+        Arc::new(enroll_attempts),
+        pki,
+        Arc::new(SoftwareCryptoProvider::new()),
+        access_log,
+        Arc::new(SystemClock),
+        Arc::new(JwtCallTokenVerifier::new()),
+        IdentitySettings::new(config.enroll_token_minutes),
+    ));
     let served = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .and_then(|runtime| {
             runtime.block_on(async {
+                let sealing = service.clone();
+                let sealed: SealedCheck = Arc::new(move || sealing.unsealed_epoch().is_err());
+                let supervisor = Arc::new(ApiSupervisor::new(
+                    config.api_addr,
+                    ca.clone(),
+                    routes(identities.clone()),
+                    sealed,
+                    refusals(identities.clone()),
+                ));
+                let runtime = tokio::runtime::Handle::current();
+                let refreshed = supervisor.clone();
+                // The channel runs each operation on a blocking thread, which may wait for this.
+                let changed = Arc::new(move || {
+                    if let Err(error) = runtime.block_on(refreshed.tick()) {
+                        tracing::error!(target: "hecate.api", reason = %error, "cannot refresh the API");
+                    }
+                });
+                let handler = Arc::new(request_handler_with_identities(
+                    service.clone(),
+                    Some(secrets),
+                    IdentityOperations {
+                        ca: ca.clone(),
+                        identities: identities.clone(),
+                        changed,
+                    },
+                ));
                 let server = ControlServer::bind(handler, &config.socket_path)?;
+                if let Err(error) = supervisor.refresh().await {
+                    tracing::error!(target: "hecate.api", reason = %error, "cannot start the API");
+                }
+                let periodic = tasks::spawn_periodic(
+                    tasks::PERIOD,
+                    ca.clone(),
+                    identities.clone(),
+                    supervisor.clone(),
+                );
                 let mut failure: Option<io::Error> = None;
                 server
                     .serve_until(async {
@@ -773,6 +1587,8 @@ fn serve(config: &HecateConfig, terminal: &mut dyn Terminal) -> i32 {
                         service.shutdown();
                     })
                     .await;
+                periodic.stop().await;
+                supervisor.shutdown().await;
                 failure.map_or(Ok(()), Err)
             })
         });

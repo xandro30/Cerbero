@@ -314,25 +314,37 @@ impl SqliteAccessLog {
     pub fn entries(&self) -> Result<Vec<AccessLogEntry>, ServiceError> {
         let connection = lock(&self.connection);
         let mut statement = connection
-            .prepare("SELECT at, operation, method, result, detail, subject, path, version FROM access_log ORDER BY id")
+            .prepare(
+                "SELECT at, operation, method, result, detail, subject, path, version, identity,
+                        certificate
+                 FROM access_log ORDER BY id",
+            )
             .map_err(store_error)?;
         let rows = statement
             .query_map([], |row| {
                 Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<i64>>(7)?,
+                    (
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ),
+                    (
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<i64>>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, Option<String>>(9)?,
+                    ),
                 ))
             })
             .map_err(store_error)?;
         rows.map(|row| {
-            let (at, operation, method, result, detail, subject, path, version) =
-                row.map_err(store_error)?;
+            let (
+                (at, operation, method, result, detail),
+                (subject, path, version, identity, certificate),
+            ) = row.map_err(store_error)?;
             Ok(AccessLogEntry {
                 at: instant(&at)?,
                 operation: Operation::parse(&operation).ok_or_else(corrupt)?,
@@ -342,6 +354,8 @@ impl SqliteAccessLog {
                 subject,
                 path,
                 version: version.map(natural).transpose()?,
+                identity,
+                certificate,
             })
         })
         .collect()
@@ -352,8 +366,9 @@ impl AccessLog for SqliteAccessLog {
     fn append(&self, entry: &AccessLogEntry) -> Result<(), ServiceError> {
         lock(&self.connection)
             .execute(
-                "INSERT INTO access_log (at, operation, method, result, detail, subject, path, version)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO access_log (at, operation, method, result, detail, subject, path, version,
+                                         identity, certificate)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     isoformat(entry.at),
                     entry.operation.as_str(),
@@ -363,6 +378,8 @@ impl AccessLog for SqliteAccessLog {
                     entry.subject,
                     entry.path,
                     entry.version.map(integer).transpose()?,
+                    entry.identity,
+                    entry.certificate,
                 ],
             )
             .map_err(store_error)?;

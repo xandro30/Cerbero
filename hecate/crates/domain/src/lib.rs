@@ -1,6 +1,9 @@
+pub mod ca;
 pub mod events;
+pub mod identity;
 pub mod instant;
 pub mod keys;
+pub mod pem;
 pub mod printable;
 mod printable_table;
 pub mod sealing;

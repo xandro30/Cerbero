@@ -15,27 +15,30 @@ use serde_json::Value;
 
 use super::{OpenError, open_database};
 
-fn store_error(_: rusqlite::Error) -> ServiceError {
+pub(super) fn store_error(_: rusqlite::Error) -> ServiceError {
     ServiceError::internal("SqliteError")
 }
 
-fn corrupt() -> ServiceError {
+pub(super) fn corrupt() -> ServiceError {
     ServiceError::internal("CorruptStoredData")
 }
 
-fn integer(value: u64) -> Result<i64, ServiceError> {
+pub(super) fn integer(value: u64) -> Result<i64, ServiceError> {
     i64::try_from(value).map_err(|_| ServiceError::internal("ValueOutOfRange"))
 }
 
-fn natural(value: i64) -> Result<u64, ServiceError> {
+pub(super) fn natural(value: i64) -> Result<u64, ServiceError> {
     u64::try_from(value).map_err(|_| corrupt())
 }
 
-fn lock(connection: &Mutex<Connection>) -> MutexGuard<'_, Connection> {
+pub(super) fn lock(connection: &Mutex<Connection>) -> MutexGuard<'_, Connection> {
     connection.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn load(connection: &Connection, stream: &str) -> Result<Vec<EventRecord>, ServiceError> {
+pub(super) fn load(
+    connection: &Connection,
+    stream: &str,
+) -> Result<Vec<EventRecord>, ServiceError> {
     let mut statement = connection
         .prepare("SELECT type, data, at FROM events WHERE stream = ?1 ORDER BY version")
         .map_err(store_error)?;
@@ -62,7 +65,45 @@ fn load(connection: &Connection, stream: &str) -> Result<Vec<EventRecord>, Servi
     .collect()
 }
 
-fn streams(connection: &Connection, prefix: &str) -> Result<Vec<String>, ServiceError> {
+/// Appends events if the stream is still at `expected_version`; returns its new version.
+pub(super) fn append(
+    connection: &Connection,
+    stream: &str,
+    events: &[EventRecord],
+    expected_version: u64,
+) -> Result<u64, ServiceError> {
+    let current: i64 = connection
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM events WHERE stream = ?1",
+            [stream],
+            |row| row.get(0),
+        )
+        .map_err(store_error)?;
+    let current = natural(current)?;
+    if current != expected_version {
+        return Err(ConcurrencyConflict {
+            current_version: current,
+        }
+        .into());
+    }
+    for (offset, event) in (1..).zip(events) {
+        connection
+            .execute(
+                "INSERT INTO events (stream, version, type, data, at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    stream,
+                    integer(current + offset)?,
+                    event.kind,
+                    Value::Object(event.data.clone()).to_string(),
+                    isoformat(event.at),
+                ],
+            )
+            .map_err(store_error)?;
+    }
+    Ok(current + events.len() as u64)
+}
+
+pub(super) fn streams(connection: &Connection, prefix: &str) -> Result<Vec<String>, ServiceError> {
     let length = integer(prefix.chars().count() as u64)?;
     let mut statement = connection
         .prepare(
@@ -197,36 +238,7 @@ impl SecretWrites for Writes<'_> {
         events: &[EventRecord],
         expected_version: u64,
     ) -> Result<u64, ServiceError> {
-        let current: i64 = self
-            .0
-            .query_row(
-                "SELECT COALESCE(MAX(version), 0) FROM events WHERE stream = ?1",
-                [stream],
-                |row| row.get(0),
-            )
-            .map_err(store_error)?;
-        let current = natural(current)?;
-        if current != expected_version {
-            return Err(ConcurrencyConflict {
-                current_version: current,
-            }
-            .into());
-        }
-        for (offset, event) in (1..).zip(events) {
-            self.0
-                .execute(
-                    "INSERT INTO events (stream, version, type, data, at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![
-                        stream,
-                        integer(current + offset)?,
-                        event.kind,
-                        Value::Object(event.data.clone()).to_string(),
-                        isoformat(event.at),
-                    ],
-                )
-                .map_err(store_error)?;
-        }
-        Ok(current + events.len() as u64)
+        append(self.0, stream, events, expected_version)
     }
 
     fn save_secret_material(

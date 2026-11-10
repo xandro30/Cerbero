@@ -10,7 +10,7 @@ use hecate_application::testing::{
 };
 use hecate_domain::sealing::attempts::AttemptPolicy;
 use hecate_domain::sealing::protection::SealConfig;
-use serde_json::json;
+use serde_json::{Value, json};
 
 const STATUS_FIELDS: [&str; 6] = [
     "state",
@@ -312,4 +312,155 @@ fn an_expired_secret_still_resolves() {
 fn a_handler_without_secrets_keeps_the_original_status_fields() {
     let reply = call(&handler_for(rig().service), "status", json!({}));
     assert_eq!(fields(&reply["data"]), status_fields());
+}
+
+// --- The `ca` block (feature 003, T034) ---------------------------------------------------------
+
+#[test]
+fn status_with_the_ca_adds_its_block_also_while_sealed() {
+    let rig = ca_rig();
+    let (handler, _) = ca_handler(&rig);
+    let before = call(&handler, "status", json!({}))["data"].clone();
+    let mut expected = status_fields();
+    expected.push("ca".to_string());
+    expected.sort();
+    assert_eq!(fields(&before), expected);
+    assert_eq!(before["ca"], json!({"exists": false}));
+
+    let confirmed = create_ca_through(&handler, &rig);
+    let unsealed = call(&handler, "status", json!({}))["data"]["ca"].clone();
+    assert_eq!(
+        fields(&unsealed),
+        [
+            "enrollment_throttled",
+            "exists",
+            "hecate_certificate",
+            "identities_expiring_24h",
+            "intermediate_days_left",
+            "root_fingerprint",
+            "suspicious_renewals_24h",
+            "trust_domain"
+        ]
+    );
+    assert_eq!(unsealed["intermediate_days_left"], Value::Null);
+    assert_eq!(unsealed["enrollment_throttled"], false);
+    assert_eq!(unsealed["identities_expiring_24h"], 0);
+    assert_eq!(unsealed["suspicious_renewals_24h"], 0);
+    assert_eq!(unsealed["exists"], true);
+    assert_eq!(unsealed["trust_domain"], TRUST_DOMAIN);
+    assert_eq!(
+        unsealed["root_fingerprint"],
+        confirmed["data"]["root_fingerprint"]
+    );
+    let own = &unsealed["hecate_certificate"];
+    assert_eq!(fields(own), ["not_after", "serial"]);
+    let serial = own["serial"].as_str().unwrap();
+    assert!(
+        hecate_domain::identity::names::Serial::parse(serial).is_ok(),
+        "{serial}"
+    );
+    assert!(
+        own["not_after"]
+            .as_str()
+            .is_some_and(|text| text.ends_with("+00:00"))
+    );
+
+    call(&handler, "seal", json!({}));
+    let sealed = call(&handler, "status", json!({}))["data"].clone();
+    assert_eq!(sealed["state"], "sealed");
+    assert_eq!(sealed["ca"], unsealed);
+}
+
+#[test]
+fn status_shows_the_days_left_of_the_intermediate_under_30_also_while_sealed() {
+    let rig = ca_rig();
+    let (handler, _) = ca_handler(&rig);
+    create_ca_through(&handler, &rig);
+    let days_left =
+        || call(&handler, "status", json!({}))["data"]["ca"]["intermediate_days_left"].clone();
+    rig.clock.advance(time::Duration::days(336));
+    assert_eq!(days_left(), json!(29));
+    call(&handler, "seal", json!({}));
+    assert_eq!(days_left(), json!(29));
+    rig.clock.advance(time::Duration::days(30));
+    assert_eq!(days_left(), json!(0));
+}
+
+#[test]
+fn status_says_when_enrollments_are_throttled_also_while_sealed() {
+    let rig = ca_rig();
+    let (handler, _) = ca_handler(&rig);
+    create_ca_through(&handler, &rig);
+    for _ in 0..10 {
+        let refused = rig.identities.enroll(
+            Some("k1"),
+            &json!({"token": "x", "csr": "x", "call_key": "x"}),
+        );
+        assert!(refused.is_err());
+    }
+    let throttled = call(&handler, "status", json!({}))["data"]["ca"].clone();
+    assert_eq!(throttled["enrollment_throttled"], true);
+    call(&handler, "seal", json!({}));
+    let sealed = call(&handler, "status", json!({}))["data"]["ca"].clone();
+    assert_eq!(sealed["enrollment_throttled"], true);
+    rig.clock.advance(time::Duration::minutes(1));
+    let over = call(&handler, "status", json!({}))["data"]["ca"].clone();
+    assert_eq!(over["enrollment_throttled"], false);
+}
+
+#[test]
+fn status_counts_expiring_identities_and_suspicious_renewals_also_sealed() {
+    let rig = ca_rig();
+    let (handler, _) = ca_handler(&rig);
+    create_ca_through(&handler, &rig);
+    let token = rig
+        .identities
+        .tokens_create("hermes")
+        .unwrap()
+        .token
+        .to_string();
+    let dir = tempfile::tempdir().unwrap();
+    let hermes =
+        hecate_infrastructure::testing::TestComponent::open(dir.path(), rig.clock.clone()).unwrap();
+    let (body, key) = hermes.enrollment(&token).unwrap();
+    let enrolled = rig.identities.enroll(Some(&key), &body).unwrap();
+    hermes
+        .accept_enrollment(&enrolled.certificate, &enrolled.chain)
+        .unwrap();
+    rig.clock.advance(time::Duration::hours(49));
+    let counted = call(&handler, "status", json!({}))["data"]["ca"].clone();
+    assert_eq!(counted["identities_expiring_24h"], 1);
+    let first = hermes.serial().unwrap();
+    let credentials = |from: Option<&hecate_domain::identity::names::Serial>| {
+        hecate_application::identity::service::Credentials {
+            certificates: hermes
+                .certificate_chain_of(from)
+                .unwrap()
+                .into_iter()
+                .take(2)
+                .collect(),
+            bearer: Some(hermes.call_token(from).unwrap()),
+        }
+    };
+    let (renewal, renewal_key) = hermes.renewal().unwrap();
+    let renewed = rig
+        .identities
+        .renew(&credentials(None), Some(&renewal_key), &renewal)
+        .unwrap();
+    hermes
+        .accept_renewal(&renewed.certificate, &renewed.chain)
+        .unwrap();
+    let (other, other_key) = hermes.throwaway_renewal(None).unwrap();
+    assert!(
+        rig.identities
+            .renew(&credentials(Some(&first)), Some(&other_key), &other)
+            .is_err()
+    );
+    call(&handler, "seal", json!({}));
+    let sealed = call(&handler, "status", json!({}))["data"]["ca"].clone();
+    assert_eq!(sealed["suspicious_renewals_24h"], 1);
+    assert_eq!(
+        sealed["identities_expiring_24h"], 0,
+        "its certificates were revoked"
+    );
 }

@@ -21,8 +21,72 @@ fn python_schema() -> Vec<SchemaRow> {
         .collect()
 }
 
+const CA_MATERIAL: &str = "CREATE TABLE ca_material (
+    generation INTEGER NOT NULL,
+    intermediate_version INTEGER NOT NULL,
+    root_certificate BLOB NOT NULL,
+    intermediate_certificate BLOB NOT NULL,
+    key_nonce BLOB NOT NULL,
+    key_ciphertext BLOB NOT NULL,
+    PRIMARY KEY (generation, intermediate_version)
+)";
+
+const HECATE_TLS: &str = "CREATE TABLE hecate_tls (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    serial TEXT NOT NULL,
+    private_key BLOB NOT NULL
+)";
+
+const ENROLL_ATTEMPTS: &str = "CREATE TABLE enroll_attempts (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    consecutive_failures INTEGER NOT NULL,
+    wait_until TEXT,
+    rejected_during_wait INTEGER NOT NULL
+)";
+
+/// The schema of the change 005 (the vector, which does not change) with what the identities add
+/// (research R10): two access log columns and three tables.
+fn schema_with_identities() -> Vec<SchemaRow> {
+    let mut rows = python_schema();
+    let access_log = rows
+        .iter_mut()
+        .find(|row| row.0 == "table" && row.1 == "access_log")
+        .unwrap();
+    let sql = access_log.3.take().unwrap();
+    assert!(sql.ends_with("    version INTEGER\n)"), "{sql}");
+    access_log.3 = Some(sql.replace(
+        "    version INTEGER\n)",
+        "    version INTEGER,\n    identity TEXT,\n    certificate TEXT\n)",
+    ));
+    let row = |kind: &str, name: &str, table: &str, sql: Option<&str>| {
+        (
+            kind.to_string(),
+            name.to_string(),
+            table.to_string(),
+            sql.map(str::to_string),
+        )
+    };
+    rows.extend([
+        row("table", "ca_material", "ca_material", Some(CA_MATERIAL)),
+        row(
+            "index",
+            "sqlite_autoindex_ca_material_1",
+            "ca_material",
+            None,
+        ),
+        row("table", "hecate_tls", "hecate_tls", Some(HECATE_TLS)),
+        row(
+            "table",
+            "enroll_attempts",
+            "enroll_attempts",
+            Some(ENROLL_ATTEMPTS),
+        ),
+    ]);
+    rows
+}
+
 #[test]
-fn a_new_database_has_exactly_the_python_schema_and_pragmas() {
+fn a_new_database_has_the_python_schema_with_the_identities_and_the_pragmas() {
     let tmp = tempfile::tempdir().unwrap();
     let connection = store::open_database(&tmp.path().join("hecate.db")).unwrap();
     let mut statement = connection
@@ -35,7 +99,7 @@ fn a_new_database_has_exactly_the_python_schema_and_pragmas() {
         .unwrap()
         .map(Result::unwrap)
         .collect();
-    assert_eq!(rows, python_schema());
+    assert_eq!(rows, schema_with_identities());
     let synchronous: i64 = connection
         .query_row("PRAGMA synchronous", [], |row| row.get(0))
         .unwrap();

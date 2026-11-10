@@ -7,6 +7,7 @@ use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 use hecate_domain::events::{EventRecord, InvalidEvents};
+use hecate_domain::identity::names::RESERVED_IDENTITIES;
 use hecate_domain::instant::parse_iso;
 use hecate_domain::keys::key::{Key, KeyEvent};
 use hecate_domain::printable::is_printable;
@@ -142,6 +143,17 @@ fn stale(current_version: u64) -> ServiceError {
         "the secret changed since it was read",
         Some(current_version),
     )
+}
+
+/// `hecate` and `admin` are no component, so they take no new secrets (FR-027 of the identities).
+fn reject_reserved(path: &SecretPath) -> Result<(), ServiceError> {
+    if RESERVED_IDENTITIES.contains(&path.owner()) {
+        return Err(invalid(format!(
+            "the identity '{}' is reserved",
+            path.owner()
+        )));
+    }
+    Ok(())
 }
 
 fn corrupt(_: InvalidEvents) -> ServiceError {
@@ -316,6 +328,8 @@ impl SecretsService {
             subject: subject.map(str::to_string),
             path,
             version,
+            identity: None,
+            certificate: None,
         })
     }
 
@@ -441,6 +455,7 @@ impl SecretsService {
             |trace| {
                 let root = self.sealing.root()?;
                 let secret_path = SecretPath::parse(path)?;
+                reject_reserved(&secret_path)?;
                 let kind = ValueType::parse(value_type)?;
                 let data = kind.validate(value)?;
                 let max_versions =
@@ -688,6 +703,7 @@ impl SecretsService {
             |trace| {
                 let root = self.sealing.root()?;
                 let secret_path = SecretPath::parse(path)?;
+                reject_reserved(&secret_path)?;
                 let now = self.now();
                 let text = secret_path.to_string();
                 let stream = secret_path.stream_name();

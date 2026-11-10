@@ -1,0 +1,821 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Hécate API",
+    "version": "1.0.0",
+    "summary": "Enrollment, renewal, revocation lists, published call-signing keys and capabilities of Hécate.",
+    "description": "TLS 1.3 only. Every operation but the enrollment requires a client certificate issued by Hécate with the current CA and a short call token bound to it. Requests are standard JSON in UTF-8 of up to 64 KiB. While Hécate is sealed, every operation answers unavailable.",
+    "license": {
+      "name": "AGPL-3.0-or-later",
+      "identifier": "AGPL-3.0-or-later"
+    }
+  },
+  "security": [
+    {
+      "mutualTLS": [],
+      "callToken": []
+    }
+  ],
+  "paths": {
+    "/v1/identities:enroll": {
+      "post": {
+        "operationId": "enrollIdentity",
+        "summary": "The first certificate of an identity, with a single-use enrollment token.",
+        "description": "Without a client certificate: the enrollment token authenticates the request. The token is used up only when the certificate is issued. Repeating exactly the request with which the token was used returns the same certificate.",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnrollRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/CertificateIssued"
+          },
+          "400": {
+            "$ref": "#/components/responses/Validation"
+          },
+          "401": {
+            "$ref": "#/components/responses/Auth"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/v1/certificates:renew": {
+      "post": {
+        "operationId": "renewCertificate",
+        "summary": "A new certificate for the identity of the connection's certificate, with new keys.",
+        "description": "A certificate is renewed once. A second attempt with the same certificate is rejected and urgently revokes every valid certificate of the identity. Repeating the same request with a new short call token returns the same certificate.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/CertificateIssued"
+          },
+          "400": {
+            "$ref": "#/components/responses/Validation"
+          },
+          "401": {
+            "$ref": "#/components/responses/Auth"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/v1/revocations": {
+      "get": {
+        "operationId": "listRevocations",
+        "summary": "The X.509 CRLs of the intermediates that still have valid certificates.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Revocations"
+          },
+          "400": {
+            "$ref": "#/components/responses/Validation"
+          },
+          "401": {
+            "$ref": "#/components/responses/Auth"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/v1/keys": {
+      "get": {
+        "operationId": "listKeys",
+        "summary": "The call-signing keys that are valid for new calls: an allowlist.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Keys"
+          },
+          "400": {
+            "$ref": "#/components/responses/Validation"
+          },
+          "401": {
+            "$ref": "#/components/responses/Auth"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/v1/keys/{kid}": {
+      "get": {
+        "operationId": "getKey",
+        "summary": "Any registered call-signing key, also an old one, to verify past signatures.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Kid"
+          },
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Key"
+          },
+          "400": {
+            "$ref": "#/components/responses/Validation"
+          },
+          "401": {
+            "$ref": "#/components/responses/Auth"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/v1/capabilities": {
+      "get": {
+        "operationId": "getCapabilities",
+        "summary": "The operations that this version of the API offers.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Capabilities"
+          },
+          "400": {
+            "$ref": "#/components/responses/Validation"
+          },
+          "401": {
+            "$ref": "#/components/responses/Auth"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "mutualTLS": {
+        "type": "mutualTLS",
+        "description": "A client certificate issued by Hécate with the current CA, whose only name is a URI SAN with the caller's SPIFFE ID. The caller presents it with the intermediate that issued it."
+      },
+      "callToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "A short call token signed with EdDSA by the call-signing key registered with the connection's certificate: iss is the caller's SPIFFE ID, aud is spiffe://<trust domain>/hecate, exp - iat is 300 s at most and jti is accepted once."
+      }
+    },
+    "parameters": {
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "description": "Evaluated within the identity of the request: reused with other content it gives conflict.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[\\x20-\\x7e]{1,128}$"
+        }
+      },
+      "RequestId": {
+        "name": "X-Request-Id",
+        "in": "header",
+        "required": false,
+        "description": "Repeated in meta.request_id; when it does not follow its rule the request gives validation.",
+        "schema": {
+          "$ref": "common.v1.json#/components/schemas/RequestId"
+        }
+      },
+      "Kid": {
+        "name": "kid",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/Kid"
+        }
+      }
+    },
+    "headers": {
+      "RetryAfter": {
+        "description": "Seconds to wait, the same as error.retry_after_s.",
+        "schema": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "responses": {
+      "CertificateIssued": {
+        "description": "The certificate issued, with its chain up to the root CA.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "common.v1.json#/components/schemas/Completed"
+                },
+                {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CertificateResult"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "Revocations": {
+        "description": "The CRLs in PEM, valid until expires_at (300 s).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "common.v1.json#/components/schemas/Completed"
+                },
+                {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/RevocationsResult"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "Keys": {
+        "description": "The keys valid for new calls, valid until expires_at (300 s).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "common.v1.json#/components/schemas/Completed"
+                },
+                {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/KeysResult"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "Key": {
+        "description": "One registered key, active or only for past signatures.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "common.v1.json#/components/schemas/Completed"
+                },
+                {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/KeyResult"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "Capabilities": {
+        "description": "The component, the major version and its operations.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "common.v1.json#/components/schemas/Completed"
+                },
+                {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CapabilitiesResult"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "Validation": {
+        "description": "validation: the request does not follow its contract.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ValidationFailure"
+            }
+          }
+        }
+      },
+      "Auth": {
+        "description": "auth: the enrollment token, the certificate or the short call token are not valid.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/AuthFailure"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "not_found: no key has that kid.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/NotFoundFailure"
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "conflict: the Idempotency-Key is reused with other content.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ConflictFailure"
+            }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "rate_limited: enrollments are throttled after 10 failures in a row.",
+        "headers": {
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/RateLimitedFailure"
+            }
+          }
+        }
+      },
+      "Unavailable": {
+        "description": "unavailable: Hécate is sealed; retry later.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/UnavailableFailure"
+            }
+          }
+        }
+      },
+      "Internal": {
+        "description": "internal: an unexpected failure.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/InternalFailure"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "EnrollRequest": {
+        "type": "object",
+        "required": ["token", "csr", "call_key"],
+        "additionalProperties": false,
+        "properties": {
+          "token": {
+            "$ref": "#/components/schemas/EnrollmentToken"
+          },
+          "csr": {
+            "$ref": "#/components/schemas/CsrPem"
+          },
+          "call_key": {
+            "$ref": "#/components/schemas/PublicKeyPem"
+          }
+        }
+      },
+      "RenewRequest": {
+        "type": "object",
+        "required": ["csr", "call_key"],
+        "additionalProperties": false,
+        "properties": {
+          "csr": {
+            "$ref": "#/components/schemas/CsrPem"
+          },
+          "call_key": {
+            "$ref": "#/components/schemas/PublicKeyPem"
+          }
+        }
+      },
+      "EnrollmentToken": {
+        "type": "string",
+        "description": "HET1.<identity>.<id>.<secret>.<root CA fingerprint>; it is shown only once.",
+        "pattern": "^HET1\\.[a-z][a-z0-9-]{0,62}\\.[0-9a-f]{16}\\.[A-Za-z0-9_-]{43}\\.[0-9a-f]{64}$"
+      },
+      "CsrPem": {
+        "type": "string",
+        "description": "One PEM block CERTIFICATE REQUEST (PKCS#10) with a P-256 key, following RFC 7468. A requested SAN must be exactly the SPIFFE ID that Hécate decides.",
+        "pattern": "^-----BEGIN CERTIFICATE REQUEST-----"
+      },
+      "PublicKeyPem": {
+        "type": "string",
+        "description": "One PEM block PUBLIC KEY with an Ed25519 key (RFC 8410), following RFC 7468: the call-signing key.",
+        "pattern": "^-----BEGIN PUBLIC KEY-----"
+      },
+      "CertificatePem": {
+        "type": "string",
+        "description": "One PEM block CERTIFICATE.",
+        "pattern": "^-----BEGIN CERTIFICATE-----\\n[\\s\\S]+\\n-----END CERTIFICATE-----\\n?$"
+      },
+      "CrlPem": {
+        "type": "string",
+        "description": "One PEM block X509 CRL.",
+        "pattern": "^-----BEGIN X509 CRL-----\\n[\\s\\S]+\\n-----END X509 CRL-----\\n?$"
+      },
+      "SpiffeId": {
+        "type": "string",
+        "pattern": "^spiffe://[a-z0-9._-]{1,255}/[a-z][a-z0-9-]{0,62}$"
+      },
+      "Serial": {
+        "type": "string",
+        "description": "The certificate serial: a positive integer of up to 128 bits in lowercase hexadecimal, without leading zeros.",
+        "pattern": "^[1-9a-f][0-9a-f]{0,31}$"
+      },
+      "Instant": {
+        "type": "string",
+        "description": "ISO 8601 extended in UTC with microseconds, as in the local channel.",
+        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}\\+00:00$"
+      },
+      "Kid": {
+        "type": "string",
+        "description": "The RFC 7638 thumbprint of the key in base64url without padding.",
+        "pattern": "^[A-Za-z0-9_-]{43}$"
+      },
+      "CertificateResult": {
+        "type": "object",
+        "required": ["identity", "serial", "certificate", "chain", "not_after", "call_key_id"],
+        "additionalProperties": false,
+        "properties": {
+          "identity": {
+            "$ref": "#/components/schemas/SpiffeId"
+          },
+          "serial": {
+            "$ref": "#/components/schemas/Serial"
+          },
+          "certificate": {
+            "$ref": "#/components/schemas/CertificatePem"
+          },
+          "chain": {
+            "description": "The intermediate that issued the certificate and the root CA, in that order.",
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "$ref": "#/components/schemas/CertificatePem"
+            }
+          },
+          "not_after": {
+            "$ref": "#/components/schemas/Instant"
+          },
+          "call_key_id": {
+            "$ref": "#/components/schemas/Kid"
+          }
+        }
+      },
+      "RevocationsResult": {
+        "type": "object",
+        "required": ["crls", "expires_at"],
+        "additionalProperties": false,
+        "properties": {
+          "crls": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/CrlPem"
+            }
+          },
+          "expires_at": {
+            "$ref": "#/components/schemas/Instant"
+          }
+        }
+      },
+      "Jwk": {
+        "type": "object",
+        "description": "An RFC 8037 JWK with three members of Cerbero.",
+        "required": ["kty", "crv", "x", "kid", "alg", "use", "cerbero_identity", "cerbero_status", "cerbero_not_after"],
+        "additionalProperties": false,
+        "properties": {
+          "kty": {
+            "const": "OKP"
+          },
+          "crv": {
+            "const": "Ed25519"
+          },
+          "x": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{43}$"
+          },
+          "kid": {
+            "$ref": "#/components/schemas/Kid"
+          },
+          "alg": {
+            "const": "EdDSA"
+          },
+          "use": {
+            "const": "sig"
+          },
+          "cerbero_identity": {
+            "$ref": "#/components/schemas/SpiffeId"
+          },
+          "cerbero_status": {
+            "description": "active: valid for new calls; verify_only: only to verify past signatures.",
+            "enum": ["active", "verify_only"]
+          },
+          "cerbero_not_after": {
+            "$ref": "#/components/schemas/Instant"
+          }
+        }
+      },
+      "KeysResult": {
+        "type": "object",
+        "required": ["keys", "expires_at"],
+        "additionalProperties": false,
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Jwk"
+            }
+          },
+          "expires_at": {
+            "$ref": "#/components/schemas/Instant"
+          }
+        }
+      },
+      "KeyResult": {
+        "type": "object",
+        "required": ["key"],
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/Jwk"
+          }
+        }
+      },
+      "CapabilitiesResult": {
+        "type": "object",
+        "required": ["component", "api", "operations"],
+        "additionalProperties": false,
+        "properties": {
+          "component": {
+            "const": "hecate"
+          },
+          "api": {
+            "const": "v1"
+          },
+          "operations": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "enum": ["identities:enroll", "certificates:renew", "revocations", "keys", "keys/{kid}", "capabilities"]
+            }
+          }
+        }
+      },
+      "ValidationFailure": {
+        "allOf": [
+          {
+            "$ref": "common.v1.json#/components/schemas/Failed"
+          },
+          {
+            "properties": {
+              "error": {
+                "properties": {
+                  "code": {
+                    "const": "validation"
+                  },
+                  "retryable": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "AuthFailure": {
+        "allOf": [
+          {
+            "$ref": "common.v1.json#/components/schemas/Failed"
+          },
+          {
+            "properties": {
+              "error": {
+                "properties": {
+                  "code": {
+                    "const": "auth"
+                  },
+                  "retryable": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "NotFoundFailure": {
+        "allOf": [
+          {
+            "$ref": "common.v1.json#/components/schemas/Failed"
+          },
+          {
+            "properties": {
+              "error": {
+                "properties": {
+                  "code": {
+                    "const": "not_found"
+                  },
+                  "retryable": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "ConflictFailure": {
+        "allOf": [
+          {
+            "$ref": "common.v1.json#/components/schemas/Failed"
+          },
+          {
+            "properties": {
+              "error": {
+                "properties": {
+                  "code": {
+                    "const": "conflict"
+                  },
+                  "retryable": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "RateLimitedFailure": {
+        "allOf": [
+          {
+            "$ref": "common.v1.json#/components/schemas/Failed"
+          },
+          {
+            "properties": {
+              "error": {
+                "required": ["retry_after_s"],
+                "properties": {
+                  "code": {
+                    "const": "rate_limited"
+                  },
+                  "retryable": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "UnavailableFailure": {
+        "allOf": [
+          {
+            "$ref": "common.v1.json#/components/schemas/Failed"
+          },
+          {
+            "properties": {
+              "error": {
+                "properties": {
+                  "code": {
+                    "const": "unavailable"
+                  },
+                  "retryable": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "InternalFailure": {
+        "allOf": [
+          {
+            "$ref": "common.v1.json#/components/schemas/Failed"
+          },
+          {
+            "properties": {
+              "error": {
+                "properties": {
+                  "code": {
+                    "const": "internal"
+                  },
+                  "retryable": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

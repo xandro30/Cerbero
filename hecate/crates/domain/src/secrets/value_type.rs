@@ -2,6 +2,7 @@
 
 use serde_json::Value;
 
+use crate::pem::{self, PemError};
 use crate::sealing::errors::HecateError;
 use crate::sensitive::SecretBytes;
 
@@ -57,91 +58,18 @@ impl ValueType {
     }
 }
 
-/// The ASCII whitespace of RFC 7468: space, tab, CR, LF, VT and FF (FR-018).
-fn is_space(character: char) -> bool {
-    matches!(character, ' ' | '\t' | '\r' | '\n' | '\x0b' | '\x0c')
-}
-
-fn is_body(character: char) -> bool {
-    character.is_ascii_alphanumeric() || matches!(character, '+' | '/' | '=') || is_space(character)
-}
-
 fn not_pem() -> HecateError {
     HecateError::invalid("the value is not a valid PEM")
 }
 
-/// One block of Python's `-----BEGIN (L)-----\s*\n(body)\s*\n-----END \1-----` at the start of
-/// `text`: the length it takes and the body without spaces, or `None` if it does not match.
-fn pem_block(text: &str) -> Option<(usize, String)> {
-    let rest = text.strip_prefix("-----BEGIN ")?;
-    let label_len = rest
-        .find(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == ' '))
-        .unwrap_or(rest.len());
-    if label_len == 0 {
-        return None;
-    }
-    let label = &rest[..label_len];
-    let rest = rest[label_len..].strip_prefix("-----")?;
-    // The body and the line breaks around it are one run of body characters, since `-` is not one.
-    let run_len = rest.find(|c: char| !is_body(c)).unwrap_or(rest.len());
-    let run = &rest[..run_len];
-    // A line break must open the run after only spaces, the run must end in a line break, and at
-    // least one character must sit between both.
-    let leading = run.find(|c: char| !is_space(c)).unwrap_or(run.len());
-    let opening = run[..leading].find('\n')?;
-    if !run.ends_with('\n') || opening + 3 > run_len {
-        return None;
-    }
-    let closing = format!("-----END {label}-----");
-    if !rest[run_len..].starts_with(&closing) {
-        return None;
-    }
-    let taken = text.len() - rest.len() + run_len + closing.len();
-    Some((taken, run.chars().filter(|c| !is_space(*c)).collect()))
-}
-
-/// Strict base64 as `b64decode(validate=True)`: groups of four, padding only at the very end.
-fn is_base64(body: &str) -> bool {
-    let bytes = body.as_bytes();
-    if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
-        return false;
-    }
-    let alphabet = |b: &u8| b.is_ascii_alphanumeric() || *b == b'+' || *b == b'/';
-    let (head, last) = bytes.split_at(bytes.len() - 4);
-    head.iter().all(alphabet)
-        && alphabet(&last[0])
-        && alphabet(&last[1])
-        && match (last[2], last[3]) {
-            (b'=', b'=') => true,
-            (third, b'=') => alphabet(&third),
-            (third, fourth) => alphabet(&third) && alphabet(&fourth),
-        }
-}
-
 fn check_pem(value: &str) -> Result<(), HecateError> {
-    let text = value.trim_matches(is_space);
-    let mut position = 0;
-    let mut blocks = 0;
-    while position < text.len() {
-        let (taken, body) = pem_block(&text[position..]).ok_or_else(not_pem)?;
-        if body.is_empty() {
-            return Err(HecateError::invalid("a PEM block is empty"));
+    pem::check(value).map_err(|error| match error {
+        PemError::NotPem => not_pem(),
+        PemError::EmptyBlock => HecateError::invalid("a PEM block is empty"),
+        PemError::InvalidBase64 => {
+            HecateError::invalid("a PEM block does not contain valid base64")
         }
-        if !is_base64(&body) {
-            return Err(HecateError::invalid(
-                "a PEM block does not contain valid base64",
-            ));
-        }
-        blocks += 1;
-        position += taken;
-        position += text[position..]
-            .find(|c: char| !is_space(c))
-            .unwrap_or(text.len() - position);
-    }
-    if blocks == 0 {
-        return Err(not_pem());
-    }
-    Ok(())
+    })
 }
 
 #[cfg(test)]

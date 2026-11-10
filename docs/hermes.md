@@ -189,7 +189,7 @@ Cada función declara su timeout técnico: segundos en las síncronas, duración
 }
 ```
 
-- **Códigos de error** cerrados y comunes: `validation`, `auth`, `not_found`, `conflict` (operación no permitida en el estado actual), `rate_limited`, `provider_unavailable`, `timeout`, `internal`, con `retryable`.
+- **Códigos de error** cerrados y comunes: `validation`, `auth`, `not_found`, `conflict` (operación no permitida en el estado actual), `rate_limited`, `provider_unavailable`, `timeout`, `unavailable` (el componente no puede atender ahora), `internal`, con `retryable`.
 - **Es error** un fallo de infraestructura o una respuesta 4XX / 5XX del proveedor (y 3XX problemáticas). Un resultado de negocio (p. ej. reputación `unknown`) va en `data`.
 - Los errores HTTP de Hermes son solo para fallos del propio Hermes o de la petición; un fallo del proveedor va dentro del sobre.
 

@@ -1,0 +1,143 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Cerbero common envelope",
+    "version": "1.0.0",
+    "summary": "The response envelope and the closed error codes shared by every API between Cerbero components.",
+    "description": "Each API between components answers with this envelope and these codes. The HTTP status of each code is fixed by the contract of each API: Hermes, for example, returns the failures of its providers inside the envelope.",
+    "license": {
+      "name": "AGPL-3.0-or-later",
+      "identifier": "AGPL-3.0-or-later"
+    }
+  },
+  "paths": {},
+  "components": {
+    "schemas": {
+      "ErrorCode": {
+        "description": "The closed set of error codes common to every API between components.",
+        "oneOf": [
+          {
+            "const": "validation",
+            "description": "The request does not follow its contract: not standard JSON, missing or extra fields, or a malformed value."
+          },
+          {
+            "const": "auth",
+            "description": "The credentials are not valid: a certificate, a short call token or an enrollment token."
+          },
+          {
+            "const": "not_found",
+            "description": "What the request names does not exist."
+          },
+          {
+            "const": "conflict",
+            "description": "The operation is not allowed in the current state, or an Idempotency-Key is reused with other content."
+          },
+          {
+            "const": "rate_limited",
+            "description": "Too many attempts; retry after retry_after_s seconds."
+          },
+          {
+            "const": "provider_unavailable",
+            "description": "An external provider behind the component is not available."
+          },
+          {
+            "const": "timeout",
+            "description": "An external provider did not answer in time; outcome_unknown says whether the effect may have happened."
+          },
+          {
+            "const": "unavailable",
+            "description": "The component cannot serve now and it is worth retrying later, for example Hécate while sealed."
+          },
+          {
+            "const": "internal",
+            "description": "An unexpected failure; the message does not reveal its cause."
+          }
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "required": ["code", "message", "retryable"],
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "retry_after_s": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Only with rate_limited."
+          },
+          "outcome_unknown": {
+            "type": "boolean",
+            "description": "Only with timeout."
+          }
+        }
+      },
+      "RequestId": {
+        "type": "string",
+        "pattern": "^[\\x20-\\x7e]{1,128}$",
+        "description": "The X-Request-Id of the request, from 1 to 128 printable ASCII characters, or one that the component generates."
+      },
+      "Meta": {
+        "type": "object",
+        "required": ["request_id", "duration_ms"],
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "$ref": "#/components/schemas/RequestId"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "Completed": {
+        "type": "object",
+        "required": ["status", "data", "error", "meta"],
+        "additionalProperties": false,
+        "description": "A request that completed; each operation refines data.",
+        "properties": {
+          "status": {
+            "const": "completed"
+          },
+          "data": {
+            "type": "object"
+          },
+          "error": {
+            "type": "null"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        }
+      },
+      "Failed": {
+        "type": "object",
+        "required": ["status", "data", "error", "meta"],
+        "additionalProperties": false,
+        "description": "A request that failed; each API fixes the HTTP status of each code.",
+        "properties": {
+          "status": {
+            "const": "failed"
+          },
+          "data": {
+            "type": "object"
+          },
+          "error": {
+            "$ref": "#/components/schemas/Error"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        }
+      }
+    }
+  }
+}

@@ -39,6 +39,24 @@ text_enum!(Operation {
     SecretPromote => "secret_promote",
     SecretDestroy => "secret_destroy",
     SecretResolve => "secret_resolve",
+    CaCreate => "ca_create",
+    CaIntermediateRenew => "ca_intermediate_renew",
+    CaReplace => "ca_replace",
+    TokenCreate => "token_create",
+    TokenList => "token_list",
+    TokenAnnul => "token_annul",
+    IdentityList => "identity_list",
+    IdentityGet => "identity_get",
+    IdentityDisable => "identity_disable",
+    IdentityEnable => "identity_enable",
+    IdentityEnroll => "identity_enroll",
+    IdentityEnrollThrottled => "identity_enroll_throttled",
+    CertificateRenew => "certificate_renew",
+    CertificateRevoke => "certificate_revoke",
+    KeyList => "key_list",
+    KeyGet => "key_get",
+    RevocationList => "revocation_list",
+    CapabilitiesGet => "capabilities_get",
 });
 
 text_enum!(Method {
@@ -46,6 +64,8 @@ text_enum!(Method {
     Recovery => "recovery",
     Local => "local",
     Identity => "identity",
+    EnrollmentToken => "enrollment_token",
+    Internal => "internal",
 });
 
 text_enum!(AccessResult {
@@ -57,7 +77,8 @@ text_enum!(AccessResult {
     NotFound => "not_found",
 });
 
-/// One row of the append-only access log.
+/// One row of the append-only access log; `identity` and `certificate` are the identity and the
+/// serial an operation of the identities touches (FR-024).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessLogEntry {
     pub at: OffsetDateTime,
@@ -68,4 +89,6 @@ pub struct AccessLogEntry {
     pub subject: Option<String>,
     pub path: Option<String>,
     pub version: Option<u64>,
+    pub identity: Option<String>,
+    pub certificate: Option<String>,
 }

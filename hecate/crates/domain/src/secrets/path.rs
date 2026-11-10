@@ -5,20 +5,10 @@ use std::fmt;
 
 use crate::sealing::errors::HecateError;
 
+pub use crate::identity::names::IDENTITY_RULE;
+use crate::identity::names::is_identity;
+
 pub const SCHEME: &str = "secret://";
-
-pub const IDENTITY_RULE: &str =
-    "the identity must be lowercase letters, digits and '-', starting with a letter";
-
-/// `[a-z][a-z0-9-]{0,62}`
-fn is_identity(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    (1..=63).contains(&bytes.len())
-        && bytes[0].is_ascii_lowercase()
-        && bytes[1..]
-            .iter()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
-}
 
 /// `[a-z0-9_-]{1,64}`
 fn is_segment(text: &str) -> bool {

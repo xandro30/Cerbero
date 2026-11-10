@@ -34,6 +34,17 @@ zeroize = { version = "1.9.1", features = ["derive"] }
 data-encoding = "2.11.1"
 nix = { version = "0.31.3", features = ["term", "resource", "mman", "socket", "signal", "user", "fs"] }
 time = { version = "0.3.55", features = ["formatting", "parsing", "macros"] }
+axum = { version = "0.8.9", default-features = false }
+hyper = { version = "1.12.0", features = ["http1", "http2", "server"] }
+hyper-util = { version = "0.1.21", features = ["server-auto", "tokio", "service"] }
+tower = "0.5.3"
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs"] }
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "prefer-post-quantum"] }
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem", "x509-parser", "zeroize"] }
+x509-parser = { version = "0.18.1", features = ["verify-aws"] }
+jsonwebtoken = { version = "11.1.0", default-features = false, features = ["aws_lc_rs"] }
+hyper-rustls = { version = "0.27.10", default-features = false, features = ["aws-lc-rs", "http1", "http2"] }
+jsonschema = { version = "0.61.0", default-features = false, features = ["resolve-file"] }
 proptest = "1.12.0"
 assert_cmd = "2.2.2"
 predicates = "3.1.4"
