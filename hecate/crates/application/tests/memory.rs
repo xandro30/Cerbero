@@ -71,3 +71,67 @@ fn the_root_lives_in_memory_only_while_unsealed() {
         Some(SealState::Sealed)
     );
 }
+
+// --- The CA (feature 003, T036) ---------------------------------------------------------------
+
+use hecate_application::ca::service::TlsMaterial;
+use hecate_application::ports::OwnTlsKey;
+use hecate_domain::sensitive::SecretBytes;
+
+#[test]
+fn the_values_that_carry_keys_of_the_ca_are_erased_when_dropped() {
+    erased_when_dropped::<TlsMaterial>();
+    erased_when_dropped::<OwnTlsKey>();
+    // The key of an intermediate, decrypted for one operation that signs.
+    erased_when_dropped::<SecretBytes>();
+}
+
+#[test]
+fn the_ca_passphrase_is_dropped_after_begin() {
+    let rig = ca_rig();
+    let begun = begin(&rig);
+    assert!(!format!("{begun:?}").contains(CA_PASSPHRASE));
+    let signed = sign(&rig, &begun);
+    rig.service
+        .create_confirm(&begun.ceremony_id, &signed.root, &signed.intermediate)
+        .unwrap();
+    for entry in rig.access_log.entries() {
+        assert!(!format!("{entry:?}").contains(CA_PASSPHRASE));
+    }
+    let contents = rig.store.contents();
+    assert!(
+        !contents
+            .windows(CA_PASSPHRASE.len())
+            .any(|window| window == CA_PASSPHRASE.as_bytes())
+    );
+}
+
+#[test]
+fn zeroize_empties_the_material_of_the_api_and_hecate_key() {
+    let (rig, _) = created_ca();
+    let mut material = rig.service.tls_material().unwrap().unwrap();
+    material.zeroize();
+    assert!(material.chain.is_empty() && material.root.is_empty());
+    assert!(material.key.expose().is_empty());
+    let mut own = hecate_application::ports::IdentityStore::load_own_tls_key(rig.store.as_ref())
+        .unwrap()
+        .unwrap();
+    own.zeroize();
+    assert!(own.private_key.expose().is_empty());
+}
+
+#[test]
+fn the_enrollment_token_lives_in_memory_that_is_erased() {
+    erased_when_dropped::<SecretKey>();
+    erased_when_dropped::<zeroize::Zeroizing<String>>();
+    let (rig, _) = created_ca();
+    let mut created = rig.identities.tokens_create("hermes").unwrap();
+    let text = created.token.to_string();
+    let parsed = hecate_domain::identity::token::EnrollmentToken::parse(&text).unwrap();
+    assert!(!format!("{parsed:?}").contains(text.split('.').nth(3).unwrap()));
+    created.token.zeroize();
+    assert!(created.token.is_empty());
+    for entry in rig.access_log.entries() {
+        assert!(!format!("{entry:?}").contains(&text));
+    }
+}

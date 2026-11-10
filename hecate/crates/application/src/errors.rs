@@ -1,6 +1,6 @@
 use hecate_domain::sealing::errors::HecateError;
 
-use crate::ports::{ConcurrencyConflict, CryptoError};
+use crate::ports::{ConcurrencyConflict, CryptoError, PkiError};
 
 /// What a use case can fail with: an error for the caller, a stale write the service turns into
 /// a conflict, or an internal failure whose cause is only logged by its kind.
@@ -32,5 +32,11 @@ impl ServiceError {
 impl From<CryptoError> for ServiceError {
     fn from(_: CryptoError) -> Self {
         Self::internal("CryptoError")
+    }
+}
+
+impl From<PkiError> for ServiceError {
+    fn from(_: PkiError) -> Self {
+        Self::internal("PkiError")
     }
 }

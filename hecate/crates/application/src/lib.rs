@@ -1,4 +1,6 @@
+pub mod ca;
 pub mod errors;
+pub mod identity;
 pub mod ports;
 pub mod sealing;
 pub mod secrets;

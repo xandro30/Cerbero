@@ -78,6 +78,8 @@ struct Session {
     recommend_passphrase_change: bool,
     pending_init: Option<PendingInit>,
     pending_rekey: Option<PendingRekey>,
+    /// Grows with every unseal (see [`SealingService::unsealed_epoch`]).
+    epoch: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,6 +226,8 @@ impl SealingService {
             subject: None,
             path: None,
             version: None,
+            identity: None,
+            certificate: None,
         })
     }
 
@@ -511,6 +515,7 @@ impl SealingService {
 
     fn open(&self, session: &mut Session, root: SecretKey, via: UnsealMethod) -> Unsealed {
         session.root = Some(RootHolder::new(root));
+        session.epoch += 1;
         session.unsealed_via = Some(via);
         session.recommend_passphrase_change = via == UnsealMethod::Recovery;
         Unsealed {
@@ -647,6 +652,43 @@ impl SealingService {
                 Err(HecateError::state_conflict(Some(self.state(&session)?), None, None).into())
             }
         }
+    }
+
+    /// A number that changes every time Hécate is unsealed, while it stays unsealed; sealed, a
+    /// `conflict` with the seal state. What belongs to one unseal, such as a pending ceremony of
+    /// the CA, is lost when it changes.
+    pub fn unsealed_epoch(&self) -> Result<u64, ServiceError> {
+        let session = self.session();
+        match &session.root {
+            Some(_) => Ok(session.epoch),
+            None => {
+                Err(HecateError::state_conflict(Some(self.state(&session)?), None, None).into())
+            }
+        }
+    }
+
+    /// Whether a text is the unseal passphrase: one pass of Argon2id with the stored parameters
+    /// that tries to open the root. It does not touch the shared attempt counter, since the CA
+    /// passphrase not opening it is the normal case (research R9 of the identities).
+    pub fn is_unseal_passphrase(&self, candidate: &str) -> Result<bool, ServiceError> {
+        let config = self.config()?;
+        let protection = &config.passphrase;
+        let key = self.crypto.derive_key(
+            candidate,
+            &protection.salt,
+            protection.kdf_opslimit,
+            usize::try_from(protection.kdf_memlimit)
+                .map_err(|_| ServiceError::internal("InvalidLimits"))?,
+        )?;
+        Ok(self
+            .crypto
+            .aead_decrypt(
+                &key,
+                &protection.nonce,
+                &protection.ciphertext,
+                &protection.aad(),
+            )
+            .is_ok())
     }
 
     /// Checks a proof (the current passphrase or two shares) with the shared attempt counter.

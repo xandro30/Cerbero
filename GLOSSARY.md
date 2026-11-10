@@ -76,7 +76,7 @@ Ver también: [README](README.md) · [ARCHITECTURE](ARCHITECTURE.md)
 | **Config / Env** | Hades | `config`: valores fijos de una integración, sin lógica. `env`: lo que cambia por despliegue (instancia, secretos como referencias). |
 | **Deprecation** | Hades, Hermes | Marca de una versión que va a dejar de usarse, con mensaje y sustituta. Avisa sin bloquear y emite `VersionDeprecated`; no se retira mientras algo la use. |
 | **Hermes** | Hermes | Componente con las librerías de terceros y sus contratos estándar por tipología. Lo recomendado para integrar un servicio externo, no un paso obligatorio. En la mitología, el mensajero entre los mundos. |
-| **Envelope** | Hermes, todos | Estructura común de respuesta de las APIs internas: `status`, `data`, `error` (código común y `retryable`) y `meta`. Los códigos son cerrados: `validation`, `auth`, `not_found`, `conflict`, `rate_limited`, `provider_unavailable`, `timeout` e `internal`. |
+| **Envelope** | Hermes, todos | Estructura común de respuesta de las APIs internas: `status`, `data`, `error` (código común y `retryable`) y `meta`. Los códigos son cerrados: `validation`, `auth`, `not_found`, `conflict`, `rate_limited`, `provider_unavailable`, `timeout`, `unavailable` (el componente no puede atender ahora, p. ej. Hécate sellada) e `internal`. |
 | **Service Type** | Hermes | Contrato común de una tipología (`chat`, `email`, `ticketing`, `threat_intel`, `network_control`...), agrupado por categoría. Es el port que implementan los proveedores. |
 | **Function** | Hermes | Operación de un tipo de servicio (p. ej. `chat.ask`, `threat_intel.ip_reputation`): consulta o cambio, modo nativo (síncrona o task) y schemas. |
 | **Provider Library** | Hermes | Librería que implementa uno o varios tipos de servicio para un proveedor (adapter), con su manifiesto, su contrato de proveedor y su versión propia. |
@@ -88,7 +88,8 @@ Ver también: [README](README.md) · [ARCHITECTURE](ARCHITECTURE.md)
 | **Contact** | Hermes, Hades | Persona o grupo con sus canales verificados y direcciones. Hades solo maneja referencias; el directorio es de Hermes. |
 | **mTLS** | Todos | TLS mutuo: cliente y servidor se identifican con certificados. Da identidad y cifra el canal entre componentes, con certificados de corta duración de una CA interna. |
 | **CA interna** | Todos | Autoridad de certificados propia de Cerbero que emite los certificados de los componentes. |
-| **JWT / JWKS** | Todos | Token corto firmado por quien llama, con permisos y contexto de auditoría. El receptor lo verifica con la clave pública del emisor, publicada en un JWKS (conjunto de claves públicas). |
+| **JWT** | Todos | Token corto firmado por quien llama, con permisos y contexto de auditoría. El receptor lo verifica con la clave de firma de llamadas del emisor. |
+| **Call Signing Key** | Todos, Hécate | Clave de firma de llamadas: clave Ed25519 de un componente, distinta de la de su certificado, con la que firma sus tokens cortos. Se registra en el alta y en cada renovación; Hécate la publica, solo a componentes autenticados, mientras su certificado es válido y su identidad está habilitada, y la conserva para verificar firmas pasadas. |
 | **Admin** | Ténaro, Hécate | Único usuario privilegiado: inicializa, desbloquea y sella Hécate, gestiona secretos, identidades y tokens de alta, invita a las personas y tiene códigos de recuperación. No confundir con el owner / maintainer de una definición. |
 | **Passkey** (WebAuthn) | Ténaro | Credencial sin contraseña, resistente al phishing, con la que una persona entra en Ténaro; el servidor solo guarda la clave pública. |
 | **Ténaro** | Ténaro | Backend de Cerbero para la UI y única superficie pública: autentica a las personas con passkeys y delega en cada componente. En la mitología, la entrada al inframundo desde el mundo de los vivos. |
@@ -100,7 +101,7 @@ Ver también: [README](README.md) · [ARCHITECTURE](ARCHITECTURE.md)
 | **AEAD** | Hécate | Cifrado autenticado con datos asociados (p. ej. AES-256-GCM): detecta cualquier cambio y liga el dato cifrado a su ruta, versión y ámbito. |
 | **Argon2id** | Hécate | Función que deriva una clave a partir de la frase del admin, costosa a propósito para frenar ataques por fuerza bruta. |
 | **Shamir** | Hécate | Reparto de un secreto en partes, de las que hacen falta un mínimo (p. ej. 2 de 3) para reconstruirlo. Se usa para recuperar la raíz. |
-| **Sealed / Unsealed** | Hécate | Sellada: arranca sin la raíz en memoria y solo admite desbloquearse. Desbloqueada: con la raíz en memoria, sirve secretos. |
+| **Sealed / Unsealed** | Hécate | Sellada: arranca sin la raíz en memoria, solo admite desbloquearse y responde `unavailable` a los componentes. Desbloqueada: con la raíz en memoria, sirve secretos y emite certificados. |
 | **Crypto-shredding** | Hécate | Borrado criptográfico: destruir la DEK de un dato para que no se pueda descifrar, aunque sus eventos sigan existiendo. |
 | **Fingerprint** | Hécate | Huella con clave de una versión de secreto (HMAC del valor con una clave derivada de la clave de ámbito, 8 bytes: `ab12-cd34-ef56-7890`). Es lo único que el admin ve de un valor: le sirve para comprobar lo que escribió y no permite recuperarlo ni probar valores sin la clave. |
 | **Grace Period** (secretos) | Hécate | Tiempo en que la versión anterior de un secreto aún se resuelve tras llegar una nueva (24 h por defecto). |
@@ -109,8 +110,10 @@ Ver también: [README](README.md) · [ARCHITECTURE](ARCHITECTURE.md)
 | **Trust Domain** | Todos | Raíz de confianza de un entorno (`cerbero.home`, `cerbero.test`): un certificado de un trust domain no vale en otro. |
 | **SPIFFE ID** | Todos | Identidad de un componente con forma `spiffe://<trust domain>/<ruta>`, como único URI SAN de su certificado. |
 | **Child Identity** | Hades, Hécate | Identidad bajo la ruta de otra (p. ej. una integración de Hades), que la pide su padre; el padre no lee sus secretos. |
-| **Enrollment Token** | Hécate | Token de un solo uso, que caduca en minutos, con el que un componente obtiene su primer certificado. |
+| **Enrollment Token** | Hécate | Token de alta: de un solo uso, ligado a una identidad y a la huella de la CA raíz, que caduca en minutos. Con él un componente obtiene su primer certificado o vuelve a darse de alta; solo lo gasta la emisión. |
 | **Passive Revocation** | Hécate | Revocar un certificado bloqueando su renovación: deja de valer al caducar (como mucho, 3 días). |
+| **Urgent Revocation** | Hécate | Revocación urgente: el certificado deja de valer al momento, entra en la lista de revocación hasta que caduca y su clave de firma de llamadas deja de valer para llamadas nuevas. |
+| **Revocation List** | Hécate, todos | Lista de revocación: CRL X.509 con los certificados revocados con urgencia que no han caducado, firmada por la intermedia que los emitió. Vale 5 minutos y los componentes la refrescan. |
 | **Eurytion** (Agent) | Orthros | Agent de Cerbero: proceso residente en un host que recolecta, filtra, parsea y envía UDM Events a Estigia. En la mitología, el pastor que guardaba el rebaño junto a Orthros. |
 | **Sensor** | Orthros | Capacidad de observación enchufable dentro del Agent (process, connection, dns, network...). Un mismo Sensor tiene una implementación por sistema operativo. |
 | **Profile** | Orthros | Tipología de equipo (Linux, macOS, Windows, Android, iOS, IoT...). Determina qué Policy recibe un Agent. |

@@ -53,6 +53,8 @@ fn entry(
         subject: None,
         path: None,
         version: None,
+        identity: None,
+        certificate: None,
     }
 }
 

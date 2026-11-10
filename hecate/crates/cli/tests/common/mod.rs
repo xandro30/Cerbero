@@ -98,3 +98,103 @@ pub fn hecate(config: &HecateConfig, terminal: &mut Scripted, args: &[&str]) -> 
     let cli = Cli::try_parse_from(std::iter::once("hecate").chain(args.iter().copied())).unwrap();
     execute(cli.command, config, terminal)
 }
+
+use std::sync::{Arc, Mutex, PoisonError};
+
+use hecate_application::testing::{CaRig, MINIMAL_KDF};
+use hecate_infrastructure::control::operations::{
+    IdentityOperations, request_handler_with_identities,
+};
+use hecate_infrastructure::control::server::LineHandler;
+use hecate_infrastructure::crypto::SoftwareCryptoProvider;
+use hecate_infrastructure::pki::RcgenPki;
+use hecate_infrastructure::testing::{ServerThread, short_dir};
+use tempfile::TempDir;
+
+pub const TRUST_DOMAIN: &str = "cerbero.test";
+pub const CA_PASSPHRASE: &str = "orchid lantern quarry 42";
+
+/// Every request line that reaches the server, to look for what must never cross the channel.
+pub struct Recording {
+    inner: Arc<dyn LineHandler>,
+    pub lines: Mutex<Vec<Vec<u8>>>,
+}
+
+impl LineHandler for Recording {
+    fn handle(&self, raw: &[u8]) -> Zeroizing<Vec<u8>> {
+        self.lines
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(raw.to_vec());
+        self.inner.handle(raw)
+    }
+}
+
+/// A running, unsealed Hécate with a CA service on in-memory storage; the fields drop in order.
+pub struct CaRunning {
+    _server: ServerThread,
+    pub config: HecateConfig,
+    pub rig: CaRig,
+    pub recording: Arc<Recording>,
+    pub base: TempDir,
+}
+
+pub fn ca_running() -> CaRunning {
+    let base = short_dir();
+    let config = HecateConfig::for_dir(base.path().join("data"), MINIMAL_KDF);
+    config.prepare().unwrap();
+    let rig = CaRig::new(
+        Arc::new(SoftwareCryptoProvider::new()),
+        Arc::new(RcgenPki::new()),
+        Arc::new(hecate_infrastructure::call_token::JwtCallTokenVerifier::new()),
+    );
+    // The CLI signs with the time of the system, as Hécate does outside the tests: the clock of
+    // the rig moves just past it.
+    let behind =
+        time::OffsetDateTime::now_utc() - hecate_application::ports::Clock::now(rig.clock.as_ref());
+    rig.clock.advance(behind + time::Duration::minutes(1));
+    let handler = request_handler_with_identities(
+        rig.sealing.clone(),
+        None,
+        IdentityOperations {
+            ca: rig.service.clone(),
+            identities: rig.identities.clone(),
+            changed: Arc::new(|| {}),
+        },
+    );
+    let recording = Arc::new(Recording {
+        inner: Arc::new(handler),
+        lines: Mutex::new(Vec::new()),
+    });
+    let server = ServerThread::start(recording.clone(), &config.socket_path);
+    CaRunning {
+        _server: server,
+        config,
+        rig,
+        recording,
+        base,
+    }
+}
+
+/// `hecate ca create` through the CLI, with a copy that opens.
+pub fn create_ca(env: &CaRunning) {
+    let out = env.base.path().join("root-ca.pem");
+    let mut terminal = Scripted::new(vec![
+        line(CA_PASSPHRASE),
+        line(out.to_str().unwrap()),
+        line(CA_PASSPHRASE),
+    ]);
+    let code = hecate(
+        &env.config,
+        &mut terminal,
+        &[
+            "ca",
+            "create",
+            "--trust-domain",
+            TRUST_DOMAIN,
+            "--out",
+            out.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code, 0, "{}", terminal.take_err());
+}

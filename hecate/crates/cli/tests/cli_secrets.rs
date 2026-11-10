@@ -6,11 +6,19 @@ mod common;
 use std::sync::Arc;
 
 use common::*;
+use hecate_application::ca::service::CaService;
+use hecate_application::ca::settings::CaSettings;
+use hecate_application::identity::service::IdentityService;
+use hecate_application::identity::settings::IdentitySettings;
 use hecate_application::secrets::settings::SecretsSettings;
 use hecate_application::testing::{GOOD_PASSPHRASE, MINIMAL_KDF, SecretsRig};
+use hecate_application::testing::{InMemoryEnrollAttempts, InMemoryIdentityStore};
 use hecate_infrastructure::config::HecateConfig;
-use hecate_infrastructure::control::operations::request_handler;
+use hecate_infrastructure::control::operations::{
+    IdentityOperations, request_handler_with_identities,
+};
 use hecate_infrastructure::crypto::SoftwareCryptoProvider;
+use hecate_infrastructure::pki::RcgenPki;
 use hecate_infrastructure::testing::{ServerThread, short_dir};
 use serde_json::json;
 use tempfile::TempDir;
@@ -34,7 +42,38 @@ fn running() -> Running {
         true,
         SecretsSettings::default(),
     );
-    let handler = request_handler(rig.sealing.clone(), Some(rig.service.clone()));
+    let identity_store = Arc::new(InMemoryIdentityStore::new());
+    let pki = Arc::new(RcgenPki::new());
+    let ca = Arc::new(CaService::new(
+        rig.sealing.clone(),
+        identity_store.clone(),
+        pki.clone(),
+        Arc::new(SoftwareCryptoProvider::new()),
+        rig.access_log.clone(),
+        rig.clock.clone(),
+        CaSettings::default(),
+    ));
+    let identities = Arc::new(IdentityService::new(
+        rig.sealing.clone(),
+        ca.clone(),
+        identity_store,
+        Arc::new(InMemoryEnrollAttempts::default()),
+        pki,
+        Arc::new(SoftwareCryptoProvider::new()),
+        rig.access_log.clone(),
+        rig.clock.clone(),
+        Arc::new(hecate_infrastructure::call_token::JwtCallTokenVerifier::new()),
+        IdentitySettings::default(),
+    ));
+    let handler = request_handler_with_identities(
+        rig.sealing.clone(),
+        Some(rig.service.clone()),
+        IdentityOperations {
+            ca,
+            identities,
+            changed: Arc::new(|| {}),
+        },
+    );
     let server = ServerThread::start(Arc::new(handler), &config.socket_path);
     Running {
         _server: server,
@@ -353,6 +392,6 @@ fn list_without_secrets_and_status_with_the_expiry_counts() {
     assert_eq!(hecate(&env.config, &mut terminal, &["status"]), 0);
     assert_eq!(
         terminal.take_out(),
-        "state: unsealed\nsecrets expired: 0\nsecrets expiring in the next 7 days: 1"
+        "state: unsealed\nsecrets expired: 0\nsecrets expiring in the next 7 days: 1\nca: none"
     );
 }

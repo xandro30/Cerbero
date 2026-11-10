@@ -547,3 +547,332 @@ impl SecretsRig {
             .collect()
     }
 }
+
+use hecate_domain::identity::names::Serial;
+use hecate_domain::sensitive::SecretBytes;
+use zeroize::Zeroizing;
+
+use crate::ports::{
+    CaMaterial, EnrollAttempts, EnrollAttemptsRepository, IdentityStore, IdentityWork,
+    IdentityWrites, OwnTlsKey,
+};
+
+#[derive(Clone, Default)]
+struct IdentityData {
+    events: BTreeMap<String, Vec<EventRecord>>,
+    ca_material: BTreeMap<(u64, u64), CaMaterial>,
+    own_tls_key: Option<(Serial, Zeroizing<Vec<u8>>)>,
+}
+
+impl IdentityWrites for IdentityData {
+    fn load(&mut self, stream: &str) -> Result<Vec<EventRecord>, ServiceError> {
+        Ok(self.events.get(stream).cloned().unwrap_or_default())
+    }
+
+    fn append(
+        &mut self,
+        stream: &str,
+        events: &[EventRecord],
+        expected_version: u64,
+    ) -> Result<u64, ServiceError> {
+        let current = self.events.get(stream).map_or(0, Vec::len) as u64;
+        if current != expected_version {
+            return Err(ConcurrencyConflict {
+                current_version: current,
+            }
+            .into());
+        }
+        self.events
+            .entry(stream.to_string())
+            .or_default()
+            .extend_from_slice(events);
+        Ok(current + events.len() as u64)
+    }
+
+    fn save_ca_material(&mut self, material: &CaMaterial) -> Result<(), ServiceError> {
+        self.ca_material.insert(
+            (material.generation, material.intermediate_version),
+            material.clone(),
+        );
+        Ok(())
+    }
+
+    fn delete_ca_material(
+        &mut self,
+        generation: u64,
+        intermediate_version: u64,
+    ) -> Result<(), ServiceError> {
+        self.ca_material.remove(&(generation, intermediate_version));
+        Ok(())
+    }
+
+    fn save_own_tls_key(&mut self, key: &OwnTlsKey) -> Result<(), ServiceError> {
+        self.own_tls_key = Some((
+            key.serial.clone(),
+            Zeroizing::new(key.private_key.expose().to_vec()),
+        ));
+        Ok(())
+    }
+}
+
+/// The store of the identities in memory; a transaction works on a draft that replaces the data
+/// only if the whole work succeeds.
+#[derive(Default)]
+pub struct InMemoryIdentityStore {
+    data: Mutex<IdentityData>,
+    failing: Mutex<bool>,
+    attempts: Mutex<usize>,
+}
+
+impl InMemoryIdentityStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Makes the next transactions fail after their work, as a power cut before the commit
+    /// would; `false` repairs it.
+    pub fn fail_commits(&self, failing: bool) {
+        *lock(&self.failing) = failing;
+    }
+
+    pub fn ca_material_count(&self) -> usize {
+        lock(&self.data).ca_material.len()
+    }
+
+    /// How many transactions were attempted, also the ones that failed.
+    pub fn transactions(&self) -> usize {
+        *lock(&self.attempts)
+    }
+
+    /// Everything the store keeps, as bytes, to look for what must never be there.
+    pub fn contents(&self) -> Vec<u8> {
+        let data = lock(&self.data);
+        let mut contents = format!("{:?}", data.events).into_bytes();
+        for material in data.ca_material.values() {
+            for part in [
+                &material.root_certificate,
+                &material.intermediate_certificate,
+                &material.key_nonce,
+                &material.key_ciphertext,
+            ] {
+                contents.extend_from_slice(part);
+            }
+        }
+        contents
+    }
+}
+
+impl EventStore for InMemoryIdentityStore {
+    fn load(&self, stream: &str) -> Result<Vec<EventRecord>, ServiceError> {
+        Ok(lock(&self.data)
+            .events
+            .get(stream)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn streams(&self, prefix: &str) -> Result<Vec<String>, ServiceError> {
+        Ok(lock(&self.data)
+            .events
+            .keys()
+            .filter(|stream| stream.starts_with(prefix))
+            .cloned()
+            .collect())
+    }
+}
+
+impl IdentityStore for InMemoryIdentityStore {
+    fn transaction(&self, work: &mut IdentityWork<'_>) -> Result<(), ServiceError> {
+        *lock(&self.attempts) += 1;
+        let failing = *lock(&self.failing);
+        let mut data = lock(&self.data);
+        let mut draft = data.clone();
+        work(&mut draft)?;
+        if failing {
+            return Err(ServiceError::internal("PowerCut"));
+        }
+        *data = draft;
+        Ok(())
+    }
+
+    fn load_ca_material(&self) -> Result<Vec<CaMaterial>, ServiceError> {
+        Ok(lock(&self.data).ca_material.values().cloned().collect())
+    }
+
+    fn load_own_tls_key(&self) -> Result<Option<OwnTlsKey>, ServiceError> {
+        Ok(lock(&self.data)
+            .own_tls_key
+            .as_ref()
+            .map(|(serial, key)| OwnTlsKey {
+                serial: serial.clone(),
+                private_key: SecretBytes::new(key.to_vec()),
+            }))
+    }
+}
+
+#[derive(Default)]
+pub struct InMemoryEnrollAttempts {
+    attempts: Mutex<EnrollAttempts>,
+}
+
+impl EnrollAttemptsRepository for InMemoryEnrollAttempts {
+    fn load(&self) -> Result<EnrollAttempts, ServiceError> {
+        Ok(lock(&self.attempts).clone())
+    }
+
+    fn save(&self, attempts: &EnrollAttempts) -> Result<(), ServiceError> {
+        *lock(&self.attempts) = attempts.clone();
+        Ok(())
+    }
+}
+
+use crate::ca::service::CaService;
+use crate::ca::settings::CaSettings;
+use crate::identity::service::IdentityService;
+use crate::identity::settings::IdentitySettings;
+use crate::ports::{CallTokenVerifier, PkiProvider};
+
+/// An initialized and unsealed Hécate with the services of the CA and of the identities over the
+/// in-memory doubles; the PKI and the verifier of short call tokens are the caller's, since the
+/// real ones live in the infrastructure.
+pub struct CaRig {
+    pub crypto: Arc<dyn CryptoProvider>,
+    pub pki: Arc<dyn PkiProvider>,
+    pub repo: Arc<InMemorySealRepository>,
+    pub clock: Arc<FakeClock>,
+    pub access_log: Arc<InMemoryAccessLog>,
+    pub sealing: Arc<SealingService>,
+    pub store: Arc<InMemoryIdentityStore>,
+    pub attempts: Arc<InMemoryEnrollAttempts>,
+    pub service: Arc<CaService>,
+    pub identities: Arc<IdentityService>,
+    /// The three recovery shares of the initialization.
+    pub shares: Vec<String>,
+    verifier: Arc<dyn CallTokenVerifier>,
+    ca_settings: CaSettings,
+    settings: IdentitySettings,
+}
+
+impl CaRig {
+    pub fn new(
+        crypto: Arc<dyn CryptoProvider>,
+        pki: Arc<dyn PkiProvider>,
+        verifier: Arc<dyn CallTokenVerifier>,
+    ) -> Self {
+        Self::configured(
+            crypto,
+            pki,
+            verifier,
+            CaSettings::default(),
+            IdentitySettings::default(),
+        )
+    }
+
+    pub fn configured(
+        crypto: Arc<dyn CryptoProvider>,
+        pki: Arc<dyn PkiProvider>,
+        verifier: Arc<dyn CallTokenVerifier>,
+        ca_settings: CaSettings,
+        settings: IdentitySettings,
+    ) -> Self {
+        let repo = Arc::new(InMemorySealRepository::new());
+        let clock = Arc::new(FakeClock::new());
+        let access_log = Arc::new(InMemoryAccessLog::new());
+        let sealing = Arc::new(make_service(
+            crypto.clone(),
+            repo.clone(),
+            access_log.clone(),
+            clock.clone(),
+        ));
+        let shares = initialize(&sealing, GOOD_PASSPHRASE);
+        sealing
+            .unseal_with_passphrase(GOOD_PASSPHRASE)
+            .expect("unseal");
+        let store = Arc::new(InMemoryIdentityStore::new());
+        let attempts = Arc::new(InMemoryEnrollAttempts::default());
+        Self::assemble(
+            (crypto, pki, verifier),
+            repo,
+            clock,
+            access_log,
+            sealing,
+            (store, attempts),
+            (ca_settings, settings),
+            shares,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    fn assemble(
+        (crypto, pki, verifier): (
+            Arc<dyn CryptoProvider>,
+            Arc<dyn PkiProvider>,
+            Arc<dyn CallTokenVerifier>,
+        ),
+        repo: Arc<InMemorySealRepository>,
+        clock: Arc<FakeClock>,
+        access_log: Arc<InMemoryAccessLog>,
+        sealing: Arc<SealingService>,
+        (store, attempts): (Arc<InMemoryIdentityStore>, Arc<InMemoryEnrollAttempts>),
+        (ca_settings, settings): (CaSettings, IdentitySettings),
+        shares: Vec<String>,
+    ) -> Self {
+        let service = Arc::new(CaService::new(
+            sealing.clone(),
+            store.clone(),
+            pki.clone(),
+            crypto.clone(),
+            access_log.clone(),
+            clock.clone(),
+            ca_settings,
+        ));
+        let identities = Arc::new(IdentityService::new(
+            sealing.clone(),
+            service.clone(),
+            store.clone(),
+            attempts.clone(),
+            pki.clone(),
+            crypto.clone(),
+            access_log.clone(),
+            clock.clone(),
+            verifier.clone(),
+            settings,
+        ));
+        Self {
+            crypto,
+            pki,
+            repo,
+            clock,
+            access_log,
+            sealing,
+            store,
+            attempts,
+            service,
+            identities,
+            shares,
+            verifier,
+            ca_settings,
+            settings,
+        }
+    }
+
+    /// A new process on the same storage, clock and access log: sealed, without a ceremony.
+    pub fn restart(&self) -> Self {
+        let sealing = Arc::new(make_service(
+            self.crypto.clone(),
+            self.repo.clone(),
+            self.access_log.clone(),
+            self.clock.clone(),
+        ));
+        Self::assemble(
+            (self.crypto.clone(), self.pki.clone(), self.verifier.clone()),
+            self.repo.clone(),
+            self.clock.clone(),
+            self.access_log.clone(),
+            sealing,
+            (self.store.clone(), self.attempts.clone()),
+            (self.ca_settings, self.settings),
+            self.shares.clone(),
+        )
+    }
+}

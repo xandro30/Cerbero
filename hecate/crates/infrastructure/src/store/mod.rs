@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS access_log (
     detail TEXT NOT NULL,
     subject TEXT,
     path TEXT,
-    version INTEGER
+    version INTEGER,
+    identity TEXT,
+    certificate TEXT
 );
 CREATE TRIGGER IF NOT EXISTS access_log_no_update BEFORE UPDATE ON access_log
 BEGIN SELECT RAISE(ABORT, 'access_log is append-only'); END;
@@ -66,6 +68,26 @@ CREATE TABLE IF NOT EXISTS secret_material (
     dek_ciphertext BLOB NOT NULL,
     PRIMARY KEY (path, version)
 );
+CREATE TABLE IF NOT EXISTS ca_material (
+    generation INTEGER NOT NULL,
+    intermediate_version INTEGER NOT NULL,
+    root_certificate BLOB NOT NULL,
+    intermediate_certificate BLOB NOT NULL,
+    key_nonce BLOB NOT NULL,
+    key_ciphertext BLOB NOT NULL,
+    PRIMARY KEY (generation, intermediate_version)
+);
+CREATE TABLE IF NOT EXISTS hecate_tls (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    serial TEXT NOT NULL,
+    private_key BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS enroll_attempts (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    consecutive_failures INTEGER NOT NULL,
+    wait_until TEXT,
+    rejected_during_wait INTEGER NOT NULL
+);
 ";
 
 #[derive(Debug, thiserror::Error)]
@@ -95,11 +117,14 @@ pub fn open_database(path: &Path) -> Result<Connection, OpenError> {
     Ok(connection)
 }
 
-/// The columns that the access log of a feature 001 database lacks.
-const ACCESS_LOG_NEW_COLUMNS: [(&str, &str); 3] = [
+/// The columns that the access log of an older database lacks: `subject`, `path` and `version`
+/// since the feature 001, and `identity` and `certificate` since the feature 003 (research R10).
+const ACCESS_LOG_NEW_COLUMNS: [(&str, &str); 5] = [
     ("subject", "TEXT"),
     ("path", "TEXT"),
     ("version", "INTEGER"),
+    ("identity", "TEXT"),
+    ("certificate", "TEXT"),
 ];
 
 fn access_log_columns(connection: &Connection) -> rusqlite::Result<Vec<String>> {
@@ -108,7 +133,7 @@ fn access_log_columns(connection: &Connection) -> rusqlite::Result<Vec<String>> 
     columns.collect()
 }
 
-/// Adds `subject`, `path` and `version` to an access log created by the feature 001.
+/// Adds the columns that an older access log lacks.
 fn migrate_access_log(connection: &Connection) -> rusqlite::Result<()> {
     let present = access_log_columns(connection)?;
     for (name, sql_type) in ACCESS_LOG_NEW_COLUMNS {
@@ -130,5 +155,7 @@ fn migrate_access_log(connection: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+pub mod ca;
+pub mod identity;
 pub mod sealing;
 pub mod secrets;

@@ -219,15 +219,15 @@ Común a todo Cerbero. La CA y las claves las gestiona Hécate.
 
 - **Formato SPIFFE:** `spiffe://cerbero.home/<componente>` como único URI SAN del certificado. Cada entorno tiene su **trust domain** (p. ej. `cerbero.test` para pruebas), así un certificado de pruebas nunca vale en casa.
 - **Identidades hijas:** cada integración de Hades tiene la suya (`spiffe://cerbero.home/hades/integration/<nombre>`), pedida por Hades con su certificado y solo bajo su ruta.
-- **PKI en dos niveles:** CA raíz offline (ECDSA P-256, unos 10 años) y CA intermedia en Hécate, renovada en una ceremonia offline. Certificados de componente de **3 días**, renovados a los dos tercios por mTLS y con clave nueva.
-- **Alta con un token de un solo uso** que genera el admin: caduca en minutos, lleva la huella de la CA raíz y se marca usado. La clave privada se genera en el componente y nunca sale de él.
-- **Revocación pasiva** por defecto (se bloquea la renovación); para lo urgente, una lista corta de certificados revocados que los componentes refrescan. Deshabilitar una identidad retira también sus claves del JWKS.
+- **PKI en dos niveles:** CA raíz (ECDSA P-256, unos 10 años), cuya clave solo existe en la CLI de Hécate durante cada ceremonia y en una copia protegida con su propia frase que guarda el admin, y CA intermedia en Hécate (un año), que se renueva con esa copia por el canal local de Hécate. Certificados de componente de **3 días**, renovados a los dos tercios con clave nueva y una sola vez cada uno: un segundo intento revoca con urgencia los certificados de esa identidad.
+- **Alta con un token de un solo uso** que genera el admin, también para volver a dar de alta una identidad: caduca en minutos, lleva la huella de la CA raíz y solo lo gasta la emisión. La clave privada se genera en el componente y nunca sale de él.
+- **Revocación pasiva** por defecto (se bloquea la renovación); para lo urgente, la lista de revocación, que vale 5 minutos y los componentes refrescan. Deshabilitar una identidad retira también sus claves de firma de llamadas de las publicadas; Hécate las conserva para verificar firmas pasadas.
 - **Relojes sincronizados (NTP)** en todos los equipos.
 
 ### Llamadas entre componentes
 
 - **mTLS** con los certificados anteriores: identidad y canal cifrado.
-- **JWT corto firmado por quien llama** con su propia clave Ed25519 (distinta de la del TLS), publicada en el JWKS de Hécate. Lleva `iss`, `aud`, `exp` de minutos, `jti`, permisos (por tipo de servicio y operación) y el contexto de auditoría (`source`, Response, Playbook o Job, owner / maintainer o la persona).
+- **JWT corto firmado por quien llama** con su propia clave de firma de llamadas (Ed25519, distinta de la del TLS), que registra en el alta y Hécate publica para los componentes autenticados. Lleva `iss`, `aud`, `exp` de minutos, `jti`, permisos (por tipo de servicio y operación) y el contexto de auditoría (`source`, Response, Playbook o Job, owner / maintainer o la persona).
 - **Ligado al canal:** el receptor exige que `iss` coincida con la identidad del certificado mTLS; un JWT robado no sirve desde otro componente.
 - **No repudio firmado:** cada cambio queda atribuido criptográficamente a quien lo pidió (ver la auditoría de Hécate).
 

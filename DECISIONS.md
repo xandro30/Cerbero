@@ -96,6 +96,10 @@ No hay más desviaciones de lenguaje. Se descartaron `by <d>` (tumbling: se cubr
 | Identidad en formato SPIFFE emitida por la CA de Hécate, sin SPIRE | Mismo formato estándar sin otro sistema que operar; las identidades hijas cubren el caso de las integraciones. |
 | JWT ligado al canal mTLS (SPIFFE desaconseja los JWT-SVID por *replay*) | El JWT lleva permisos y contexto de auditoría, y exigir que `iss` coincida con el certificado de la conexión evita su reutilización desde otro componente. |
 | Hécate firma los checkpoints de auditoría de todo Cerbero | Un componente comprometido no puede reescribir su historia ya firmada: el no repudio queda respaldado criptográficamente, no solo por el registro append-only. |
+| Cada certificado se renueva una sola vez, y un segundo intento revoca con urgencia los de esa identidad (step-ca renueva mientras el certificado sea válido) | Un segundo intento con un certificado ya renovado solo lo hace quien tiene una copia de su clave: se trata como un robo y corta todas las identidades de ese componente. |
+| Las claves de firma de llamadas solo se publican a componentes autenticados, sin un JWKS público | Nada fuera de Cerbero necesita verificar sus llamadas, y así la lista no revela qué componentes existen. |
+| Ante una intermedia comprometida o la pérdida de la clave de la CA raíz, se sustituye la CA entera en lugar de revocar la intermedia | Revocar la intermedia exigiría la clave raíz, que puede ser justo lo perdido, y una CRL de la raíz que todos consulten; con certificados de 3 días, volver a dar de alta los componentes es asumible. |
+| El alta se autentica con el token, sin certificado de cliente (SPIFFE atestigua el nodo y la carga) | En casa no hay plataforma que atestiguar; el token de un solo uso con la huella de la CA raíz deja al componente comprobar a Hécate antes de enviar nada. |
 
 ### Descartado en Hécate y en la identidad
 
@@ -115,6 +119,7 @@ No hay más desviaciones de lenguaje. Se descartaron `by <d>` (tumbling: se cubr
 | Tras un corte de luz de toda la casa, Hécate queda sellada y no hay avisos hasta desbloquearla | Los avisos dependen de secretos que custodia Hécate; Ténaro muestra el estado. |
 | La raíz está en memoria mientras Hécate está desbloqueada; los secretos de paso se borran al terminar cada operación, pero pueden quedar copias que el proceso no controla (al moverse los datos, dentro de las librerías y en los búferes del sistema) | Se mitiga más adelante con el adapter de hardware. |
 | Ninguna implementación de Shamir tiene una auditoría pública confirmada, tampoco vsss-rs, la que usa Hécate ([ADR 0007](docs/adr/0007-pila-hecate-rust.md)) | Shamir solo protege la clave de recuperación; el algoritmo es pequeño y revisable, y lo cubren pruebas: cualquier pareja de partes reconstruye la clave y una sola parte no revela nada. |
+| La clave propia de Hécate se guarda en claro (`hecate_tls`): se lee sin desbloquear, también desde las copias, y vale mientras su certificado no caduque ni se revoque | Permite responder a los componentes, con su certificado vigente, que Hécate está sellada. Lo acotan los certificados de 3 días y la revocación urgente, que lo reemite al momento con otra clave. |
 
 ---
 
@@ -131,6 +136,7 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 | Pruebas en Rust con cargo test y proptest | [0006](docs/adr/0006-pruebas-rust-cargo-proptest.md) |
 | Pila de Hécate en Rust: aws-lc-rs, libsodium para Argon2id, vsss-rs, tokio y rusqlite | [0007](docs/adr/0007-pila-hecate-rust.md) |
 | Permiso adicional de enlace con OpenSSL y sus derivadas en la AGPL | [0008](docs/adr/0008-excepcion-openssl-agpl.md) |
+| API mTLS de Hécate: axum, rustls, rcgen, jsonwebtoken, CRL X.509 y OpenAPI en JSON | [0009](docs/adr/0009-pila-api-hecate.md) |
 
 ---
 
@@ -183,6 +189,7 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 | `chat.ask` | Clasificación (consulta con `side_effect`) y comportamiento con cada proveedor, a ajustar al implementar; texto libre más adelante. |
 | Permisos por rol | Hoy hay un único rol privilegiado, el admin (Hécate, identidades, invitaciones); owner y maintainer salen de las definiciones. Falta la capa de permisos para el resto. |
 | `signal` en otros destinos | Solo `hades.signal` tiene uso; en los demás, cuando su contrato publique señales. |
+| Access Policy de Hécate y resolución por el canal autenticado | La resolución de secretos es un caso de uso interno; falta su canal por identidad y la Access Policy que decide qué rutas y operaciones usa cada una. |
 | Adapter de hardware de Hécate | TPM o YubiKey detrás del `CryptoProvider`: desbloqueo automático y claves que no salen del dispositivo. |
 | Rotación automática de secretos | Que la librería del proveedor cree credenciales nuevas por API cuando el proveedor lo permita. |
 | Anclaje externo de los checkpoints | Una copia de los checkpoints firmados fuera de Cerbero, para detectar también una reescritura de Hécate. |
@@ -194,6 +201,4 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 
 Cambios sin fusionar que el propietario aparcó para hacer antes otro (constitución, «Una cosa a la vez»). Su número de `specs/` queda reservado, y la fila la retira la PR que fusiona el cambio.
 
-| Cambio | Rama | Motivo | Espera a |
-|---|---|---|---|
-| `003-hecate-identities` | `feature/003-hecate-identities` | Hécate pasa a Rust ([ADR 0005](docs/adr/0005-rust-para-orthros-y-hecate.md)) y la feature se planifica sobre la Hécate migrada | Que se fusione la migración de Hécate |
+Ninguno.

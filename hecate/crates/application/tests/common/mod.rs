@@ -204,3 +204,235 @@ pub fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         .windows(needle.len())
         .any(|window| window == needle)
 }
+
+use hecate_application::ca::service::CeremonyBegun;
+use hecate_application::ca::settings::CaSettings;
+use hecate_application::identity::settings::IdentitySettings;
+use hecate_application::ports::Clock;
+use hecate_application::testing::CaRig;
+use hecate_domain::identity::names::{Serial, TrustDomain};
+use hecate_domain::pem;
+use hecate_infrastructure::call_token::JwtCallTokenVerifier;
+use hecate_infrastructure::pki::{RcgenPki, RootCaKey};
+use time::OffsetDateTime;
+
+pub const TRUST_DOMAIN: &str = "cerbero.test";
+pub const CA_PASSPHRASE: &str = "orchid lantern quarry 42";
+
+/// An initialized and unsealed Hécate with a CA service and the PKI of rcgen.
+pub fn ca_rig() -> CaRig {
+    CaRig::new(
+        crypto(),
+        Arc::new(RcgenPki::new()),
+        Arc::new(JwtCallTokenVerifier::new()),
+    )
+}
+
+pub fn serial(byte: u8) -> Serial {
+    Serial::from_be_bytes(&[byte; 16]).unwrap()
+}
+
+pub fn trust_domain() -> TrustDomain {
+    TrustDomain::parse(TRUST_DOMAIN).unwrap()
+}
+
+pub fn begin(rig: &CaRig) -> CeremonyBegun {
+    rig.service
+        .create_begin(TRUST_DOMAIN, CA_PASSPHRASE)
+        .unwrap()
+}
+
+/// What the CLI does between `begin` and `confirm`: the root CA and the intermediate it signs.
+pub struct SignedCa {
+    pub root_key: RootCaKey,
+    pub root_der: Vec<u8>,
+    pub intermediate_der: Vec<u8>,
+    pub root: String,
+    pub intermediate: String,
+}
+
+/// The CLI side with a root CA issued at `root_issued_at` and the intermediate signed now.
+pub fn sign_with_root_issued_at(
+    rig: &CaRig,
+    begun: &CeremonyBegun,
+    root_issued_at: OffsetDateTime,
+) -> SignedCa {
+    let root_key = RootCaKey::generate().unwrap();
+    let root_der = root_key
+        .root_certificate(&trust_domain(), &serial(0x9f), root_issued_at)
+        .unwrap();
+    let intermediate_der = root_key
+        .sign_intermediate(
+            &root_der,
+            &begun.intermediate_csr,
+            &serial(0x9e),
+            rig.clock.now(),
+        )
+        .unwrap();
+    SignedCa {
+        root: pem::encode("CERTIFICATE", &root_der),
+        intermediate: pem::encode("CERTIFICATE", &intermediate_der),
+        root_key,
+        root_der,
+        intermediate_der,
+    }
+}
+
+pub fn sign(rig: &CaRig, begun: &CeremonyBegun) -> SignedCa {
+    sign_with_root_issued_at(rig, begun, rig.clock.now())
+}
+
+/// The whole ceremony on a rig.
+pub fn create_ca_on(rig: &CaRig) -> SignedCa {
+    let begun = begin(rig);
+    let signed = sign(rig, &begun);
+    rig.service
+        .create_confirm(&begun.ceremony_id, &signed.root, &signed.intermediate)
+        .unwrap();
+    signed
+}
+
+/// A CA created with the whole ceremony.
+pub fn created_ca() -> (CaRig, SignedCa) {
+    let rig = ca_rig();
+    let signed = create_ca_on(&rig);
+    (rig, signed)
+}
+
+/// A rig whose service of identities has other settings.
+pub fn ca_rig_with(settings: IdentitySettings) -> CaRig {
+    CaRig::configured(
+        crypto(),
+        Arc::new(RcgenPki::new()),
+        Arc::new(JwtCallTokenVerifier::new()),
+        CaSettings::default(),
+        settings,
+    )
+}
+
+use hecate_application::identity::service::Enrolled;
+use hecate_application::ports::{CertificateProfile, IdentityStore};
+use hecate_domain::events::IdentityEvent;
+use hecate_domain::identity::names::{IdentityName, SpiffeId};
+
+/// The DER of an Ed25519 SubjectPublicKeyInfo before its 32 bytes (RFC 8410).
+const ED25519_SPKI_PREFIX: [u8; 12] = [
+    0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+];
+
+/// A call key of a component, in PEM.
+pub fn call_key_pem(byte: u8) -> String {
+    pem::encode(
+        "PUBLIC KEY",
+        &[ED25519_SPKI_PREFIX.as_slice(), &[byte; 32]].concat(),
+    )
+}
+
+pub fn spiffe(identity: &str) -> SpiffeId {
+    SpiffeId::new(trust_domain(), IdentityName::parse(identity).unwrap())
+}
+
+/// The request of a component for a new P-256 key: it asks for `asks_for`, or for no name.
+pub fn request_for(rig: &CaRig, asks_for: Option<&str>) -> String {
+    let key = rig.pki.generate_key().unwrap();
+    let profile = match asks_for {
+        Some(identity) => CertificateProfile::Leaf {
+            spiffe_id: spiffe(identity),
+        },
+        None => CertificateProfile::Root {
+            trust_domain: trust_domain(),
+        },
+    };
+    rig.pki.create_request(&key, &profile).unwrap()
+}
+
+pub fn enroll_body(token: &str, csr: &str, call_key: &str) -> serde_json::Value {
+    json!({"token": token, "csr": csr, "call_key": call_key})
+}
+
+pub fn new_token(rig: &CaRig, identity: &str) -> String {
+    rig.identities
+        .tokens_create(identity)
+        .unwrap()
+        .token
+        .to_string()
+}
+
+/// An enrollment of `identity` with a new token and new keys, under an Idempotency-Key.
+pub fn enroll_new(rig: &CaRig, identity: &str, key: &str) -> Enrolled {
+    let token = new_token(rig, identity);
+    let body = enroll_body(&token, &request_for(rig, Some(identity)), &call_key_pem(1));
+    rig.identities.enroll(Some(key), &body).unwrap()
+}
+
+/// Appends events to the stream of an identity, as the operations of later stories do.
+pub fn append_identity_events(rig: &CaRig, identity: &str, events: &[IdentityEvent]) {
+    let stream = format!("identity/{identity}");
+    let records: Vec<EventRecord> = events.iter().map(IdentityEvent::encode).collect();
+    rig.store
+        .transaction(&mut |writes| {
+            let version = writes.load(&stream)?.len() as u64;
+            writes.append(&stream, &records, version)?;
+            Ok(())
+        })
+        .unwrap();
+}
+
+use hecate_application::errors::ServiceError as Refusal;
+use hecate_application::identity::service::Credentials;
+use hecate_infrastructure::testing::{TempDir, TestComponent, short_dir};
+
+/// A component of the tests that talks to the services directly, without the API.
+pub struct Component {
+    pub inner: TestComponent,
+    _dir: TempDir,
+}
+
+impl Component {
+    /// A component enrolled as `identity` with a new token.
+    pub fn enrolled(rig: &CaRig, identity: &str) -> Self {
+        let dir = short_dir();
+        let inner = TestComponent::open(dir.path(), rig.clock.clone()).unwrap();
+        let token = new_token(rig, identity);
+        let (body, key) = inner.enrollment(&token).unwrap();
+        let enrolled = rig.identities.enroll(Some(&key), &body).unwrap();
+        inner
+            .accept_enrollment(&enrolled.certificate, &enrolled.chain)
+            .unwrap();
+        Self { inner, _dir: dir }
+    }
+
+    /// The credentials of a call: a certificate it keeps and a new short call token.
+    pub fn credentials(&self, from: Option<&Serial>) -> Credentials {
+        Credentials {
+            certificates: self
+                .inner
+                .certificate_chain_of(from)
+                .unwrap()
+                .into_iter()
+                .take(2)
+                .collect(),
+            bearer: Some(self.inner.call_token(from).unwrap()),
+        }
+    }
+
+    /// Its pending renewal, sent with a new short call token.
+    pub fn renew(&self, rig: &CaRig) -> Result<Enrolled, Refusal> {
+        let (body, key) = self.inner.renewal().unwrap();
+        rig.identities
+            .renew(&self.credentials(None), Some(&key), &body)
+    }
+
+    /// A renewal that is issued, whose certificate becomes the current one.
+    pub fn renewed(&self, rig: &CaRig) -> Enrolled {
+        let renewed = self.renew(rig).unwrap();
+        self.inner
+            .accept_renewal(&renewed.certificate, &renewed.chain)
+            .unwrap();
+        renewed
+    }
+
+    pub fn serial(&self) -> Serial {
+        self.inner.serial().unwrap()
+    }
+}

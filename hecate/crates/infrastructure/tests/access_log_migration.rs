@@ -65,6 +65,8 @@ fn entry(
         subject: subject.map(str::to_string),
         path: path.map(str::to_string),
         version,
+        identity: None,
+        certificate: None,
     }
 }
 
