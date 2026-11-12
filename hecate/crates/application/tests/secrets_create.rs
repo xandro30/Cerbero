@@ -53,14 +53,14 @@ fn metadata_given_at_creation_is_kept() {
     let rig = secrets();
     let options = CreateOptions {
         max_versions: json!(3),
-        rotate_every: json!("90d"),
+        rotate_every: json!("P90D"),
         expires_at: json!("2027-01-01T00:00:00+00:00"),
     };
     rig.service.create(PATH, VALUE, "string", &options).unwrap();
     let got = rig.service.get(PATH).unwrap();
     assert_eq!(
         (got.max_versions, got.rotate_every.as_deref()),
-        (3, Some("90d"))
+        (3, Some("P90D"))
     );
     assert_eq!(
         got.expires_at.map(isoformat).as_deref(),
@@ -310,4 +310,50 @@ fn a_maximum_that_is_not_an_integer_is_rejected_like_one_out_of_range() {
         );
         assert!(rig.store.is_empty());
     }
+}
+
+// --- Feature 006: `rotate_every` as a duration (T032, FR-023) -------------------------------------
+
+#[test]
+fn rotate_every_is_a_duration_in_days_or_weeks() {
+    let rig = secrets();
+    for (n, rotate_every) in ["P90D", "P12W", "P3650D", "P520W"].iter().enumerate() {
+        let options = CreateOptions {
+            rotate_every: json!(rotate_every),
+            ..CreateOptions::default()
+        };
+        rig.service
+            .create(
+                &format!("secret://hermes/kept_{n}"),
+                VALUE,
+                "string",
+                &options,
+            )
+            .unwrap();
+    }
+    for rotate_every in [
+        json!("90d"),
+        json!("P0D"),
+        json!("P3M"),
+        json!("P1W2D"),
+        json!(""),
+        json!(90),
+    ] {
+        let options = CreateOptions {
+            rotate_every: rotate_every.clone(),
+            ..CreateOptions::default()
+        };
+        let error = rig
+            .service
+            .create("secret://hermes/refused", VALUE, "string", &options)
+            .err()
+            .unwrap();
+        assert!(is_invalid(&error), "{rotate_every}");
+        assert_eq!(
+            error.to_string(),
+            "rotate_every must be an ISO 8601 duration in days or weeks, such as P90D or P12W",
+            "{rotate_every}"
+        );
+    }
+    assert!(rig.service.get("secret://hermes/refused").is_err());
 }

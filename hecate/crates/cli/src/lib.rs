@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use hecate_application::access_policy::service::AccessPolicyService;
 use hecate_application::ca::service::{CaService, random_serial};
 use hecate_application::ca::settings::CaSettings;
 use hecate_application::identity::service::IdentityService;
@@ -20,8 +21,7 @@ use hecate_application::secrets::service::SecretsService;
 use hecate_application::secrets::settings::SecretsSettings;
 use hecate_domain::identity::names::{RootFingerprint, TrustDomain};
 use hecate_domain::pem;
-use hecate_infrastructure::api::routes::{refusals, routes};
-use hecate_infrastructure::api::server::SealedCheck;
+use hecate_infrastructure::api::routes::{refusals, routes, sealed_check};
 use hecate_infrastructure::api::supervisor::ApiSupervisor;
 use hecate_infrastructure::backup::{open_backup, seal_backup};
 use hecate_infrastructure::call_token::JwtCallTokenVerifier;
@@ -117,6 +117,11 @@ pub enum Command {
         #[command(subcommand)]
         command: CertificatesCommand,
     },
+    /// Manage the Access Policy: what each identity reads besides its own secrets
+    Policies {
+        #[command(subcommand)]
+        command: PoliciesCommand,
+    },
     /// Seal now: the root leaves memory
     Seal,
     /// Show the seal state
@@ -210,6 +215,22 @@ pub enum CertificatesCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum PoliciesCommand {
+    /// Let an identity read one secret of another identity
+    GrantRead { identity: String, secret: String },
+    /// Stop an identity from reading a secret of another identity
+    RevokeRead { identity: String, secret: String },
+    /// Let an identity read the aggregate status of Hécate
+    GrantStatus { identity: String },
+    /// Stop an identity from reading the aggregate status of Hécate
+    RevokeStatus { identity: String },
+    /// List the identities whose policy has changed
+    List,
+    /// Show the policy of an identity and its history
+    Get { identity: String },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum SecretsCommand {
     /// Store a new secret (version 1)
     Create {
@@ -224,7 +245,7 @@ pub enum SecretsCommand {
         /// Versions kept, from 2 to 100 (default 10)
         #[arg(long, allow_negative_numbers = true)]
         max_versions: Option<i64>,
-        /// Informative rotation period, e.g. 90d
+        /// Rotation period, an ISO 8601 duration in days or weeks such as P90D or P12W
         #[arg(long)]
         rotate_every: Option<String>,
         /// Informative expiry, ISO 8601
@@ -317,6 +338,7 @@ pub fn execute(command: Command, config: &HecateConfig, terminal: &mut dyn Termi
         Command::Certificates {
             command: CertificatesCommand::Revoke { serial, urgent },
         } => Ok(certificates_revoke(config, terminal, &serial, urgent)),
+        Command::Policies { command } => Ok(policies(config, terminal, command)),
         Command::Seal => Ok(seal(config, terminal)),
         Command::Status => Ok(status(config, terminal)),
         Command::Secrets { command } => secrets(config, terminal, command),
@@ -397,6 +419,10 @@ fn status(config: &HecateConfig, terminal: &mut dyn Terminal) -> i32 {
         terminal.out(&format!(
             "secrets expiring in the next 7 days: {}",
             shown(field(&data, "secrets_expiring_soon"))
+        ));
+        terminal.out(&format!(
+            "secrets due rotation: {}",
+            shown(field(&data, "secrets_due_rotation"))
         ));
     }
     if let Some(ca) = data.get("ca") {
@@ -586,6 +612,188 @@ fn identities(
         }
     }
     0
+}
+
+fn yes_no(value: &Value) -> &'static str {
+    if truthy(value) { "yes" } else { "no" }
+}
+
+/// The line that an order of the Access Policy prints, from the data of its reply.
+type OrderLine = fn(&Value) -> String;
+
+/// An order of the Access Policy: the line of what it changed, or of `unchanged`.
+fn policy_order(
+    config: &HecateConfig,
+    terminal: &mut dyn Terminal,
+    op: &str,
+    args: Value,
+    lines: (OrderLine, OrderLine),
+) -> i32 {
+    let Some(data) = call(config, terminal, op, args) else {
+        return 1;
+    };
+    let (changed, unchanged) = lines;
+    let line = if truthy(field(&data, "changed")) {
+        changed(&data)
+    } else {
+        unchanged(&data)
+    };
+    terminal.out(&line);
+    0
+}
+
+/// `hecate policies` (contracts/cli.md): the orders and queries of the admin on the Access
+/// Policy.
+fn policies(config: &HecateConfig, terminal: &mut dyn Terminal, command: PoliciesCommand) -> i32 {
+    let text = |data: &Value, key: &str| shown(field(data, key));
+    match command {
+        PoliciesCommand::GrantRead { identity, secret } => policy_order(
+            config,
+            terminal,
+            "policies.grant_read",
+            json!({"identity": identity, "secret": secret}),
+            (
+                |data| {
+                    format!(
+                        "granted read {} to {} (policy version {})",
+                        shown(field(data, "secret")),
+                        shown(field(data, "identity")),
+                        shown(field(data, "version"))
+                    )
+                },
+                |data| {
+                    format!(
+                        "unchanged: {} already reads {}",
+                        shown(field(data, "identity")),
+                        shown(field(data, "secret"))
+                    )
+                },
+            ),
+        ),
+        PoliciesCommand::RevokeRead { identity, secret } => policy_order(
+            config,
+            terminal,
+            "policies.revoke_read",
+            json!({"identity": identity, "secret": secret}),
+            (
+                |data| {
+                    format!(
+                        "revoked read {} from {} (policy version {})",
+                        shown(field(data, "secret")),
+                        shown(field(data, "identity")),
+                        shown(field(data, "version"))
+                    )
+                },
+                |data| {
+                    format!(
+                        "unchanged: {} does not read {}",
+                        shown(field(data, "identity")),
+                        shown(field(data, "secret"))
+                    )
+                },
+            ),
+        ),
+        PoliciesCommand::GrantStatus { identity } => policy_order(
+            config,
+            terminal,
+            "policies.grant_status",
+            json!({"identity": identity}),
+            (
+                |data| {
+                    format!(
+                        "granted status to {} (policy version {})",
+                        shown(field(data, "identity")),
+                        shown(field(data, "version"))
+                    )
+                },
+                |data| {
+                    format!(
+                        "unchanged: {} already has status",
+                        shown(field(data, "identity"))
+                    )
+                },
+            ),
+        ),
+        PoliciesCommand::RevokeStatus { identity } => policy_order(
+            config,
+            terminal,
+            "policies.revoke_status",
+            json!({"identity": identity}),
+            (
+                |data| {
+                    format!(
+                        "revoked status from {} (policy version {})",
+                        shown(field(data, "identity")),
+                        shown(field(data, "version"))
+                    )
+                },
+                |data| {
+                    format!(
+                        "unchanged: {} has no status",
+                        shown(field(data, "identity"))
+                    )
+                },
+            ),
+        ),
+        PoliciesCommand::List => {
+            let Some(data) = call(config, terminal, "policies.list", json!({})) else {
+                return 1;
+            };
+            let listed = items(&data, "policies");
+            if listed.is_empty() {
+                terminal.out("no policies");
+            }
+            for policy in &listed {
+                terminal.out(&format!(
+                    "{} version {} status {} reads {}",
+                    text(policy, "identity"),
+                    text(policy, "version"),
+                    yes_no(field(policy, "status")),
+                    items(policy, "reads").len()
+                ));
+            }
+            0
+        }
+        PoliciesCommand::Get { identity } => {
+            let Some(data) = call(
+                config,
+                terminal,
+                "policies.get",
+                json!({"identity": identity}),
+            ) else {
+                return 1;
+            };
+            terminal.out(&format!(
+                "policy {} version {} status {}",
+                text(&data, "identity"),
+                text(&data, "version"),
+                yes_no(field(&data, "status"))
+            ));
+            for secret in &items(&data, "reads") {
+                terminal.out(&format!("read {}", shown(secret)));
+            }
+            let history = items(&data, "history");
+            if !history.is_empty() {
+                terminal.out("history");
+            }
+            for change in &history {
+                let secret = field(change, "secret");
+                let secret = if secret.is_null() {
+                    String::new()
+                } else {
+                    format!(" {}", shown(secret))
+                };
+                terminal.out(&format!(
+                    "{} {} {}{secret} by {}",
+                    text(change, "version"),
+                    text(change, "at"),
+                    text(change, "change"),
+                    text(change, "by")
+                ));
+            }
+            0
+        }
+    }
 }
 
 /// `hecate certificates revoke` (contracts/cli.md): Hécate's certificate comes back replaced.
@@ -1506,9 +1714,10 @@ fn serve(config: &HecateConfig, terminal: &mut dyn Terminal) -> i32 {
         Arc::new(SystemClock),
         SealingSettings::new(config.kdf),
     ));
+    let store = Arc::new(store);
     let secrets = Arc::new(SecretsService::new(
         service.clone(),
-        Arc::new(store),
+        store.clone(),
         Arc::new(SoftwareCryptoProvider::new()),
         access_log.clone(),
         Arc::new(SystemClock),
@@ -1525,9 +1734,18 @@ fn serve(config: &HecateConfig, terminal: &mut dyn Terminal) -> i32 {
         Arc::new(SystemClock),
         CaSettings::new(config.cert_lifetime_hours),
     ));
+    let policies = Arc::new(AccessPolicyService::new(
+        service.clone(),
+        identity_store.clone(),
+        store,
+        access_log.clone(),
+        Arc::new(SystemClock),
+    ));
     let identities = Arc::new(IdentityService::new(
         service.clone(),
         ca.clone(),
+        policies.clone(),
+        secrets.clone(),
         identity_store,
         Arc::new(enroll_attempts),
         pki,
@@ -1542,13 +1760,11 @@ fn serve(config: &HecateConfig, terminal: &mut dyn Terminal) -> i32 {
         .build()
         .and_then(|runtime| {
             runtime.block_on(async {
-                let sealing = service.clone();
-                let sealed: SealedCheck = Arc::new(move || sealing.unsealed_epoch().is_err());
                 let supervisor = Arc::new(ApiSupervisor::new(
                     config.api_addr,
                     ca.clone(),
                     routes(identities.clone()),
-                    sealed,
+                    sealed_check(service.clone()),
                     refusals(identities.clone()),
                 ));
                 let runtime = tokio::runtime::Handle::current();
@@ -1565,6 +1781,7 @@ fn serve(config: &HecateConfig, terminal: &mut dyn Terminal) -> i32 {
                     IdentityOperations {
                         ca: ca.clone(),
                         identities: identities.clone(),
+                        policies: policies.clone(),
                         changed,
                     },
                 ));

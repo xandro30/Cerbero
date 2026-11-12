@@ -84,6 +84,7 @@ use hecate_application::secrets::service::SecretsService;
 use hecate_application::secrets::settings::SecretsSettings;
 use hecate_application::testing::MINIMAL_KDF;
 
+use hecate_application::access_policy::service::AccessPolicyService;
 use hecate_application::ca::service::CaService;
 use hecate_application::ca::settings::CaSettings;
 use hecate_application::identity::service::IdentityService;
@@ -109,6 +110,7 @@ pub struct SqliteStack {
     pub enroll_attempts: Arc<SqliteEnrollAttempts>,
     pub ca: Arc<CaService>,
     pub identities: Arc<IdentityService>,
+    pub policies: Arc<AccessPolicyService>,
 }
 
 impl SqliteStack {
@@ -154,9 +156,18 @@ impl SqliteStack {
             clock.clone(),
             CaSettings::default(),
         ));
+        let policies = Arc::new(AccessPolicyService::new(
+            sealing.clone(),
+            identity_store.clone(),
+            store.clone(),
+            access_log.clone(),
+            clock.clone(),
+        ));
         let identities = Arc::new(IdentityService::new(
             sealing.clone(),
             ca.clone(),
+            policies.clone(),
+            service.clone(),
             identity_store.clone(),
             enroll_attempts.clone(),
             pki,
@@ -177,6 +188,7 @@ impl SqliteStack {
             enroll_attempts,
             ca,
             identities,
+            policies,
         }
     }
 
@@ -544,6 +556,7 @@ pub use tempfile::TempDir;
 const RENEWAL: &str = "renewal";
 const HISTORY: &str = "history";
 const RENEW: &str = "/v1/certificates:renew";
+const RESOLVE: &str = "/v1/secrets:resolve";
 
 fn random_hex() -> io::Result<String> {
     let mut bytes = [0u8; 16];
@@ -1119,6 +1132,32 @@ impl TestComponent {
     /// What the API offers (`GET /v1/capabilities`).
     pub async fn capabilities(&self, addr: SocketAddr) -> Result<Reply, ComponentError> {
         self.query(addr, "/v1/capabilities").await
+    }
+
+    /// The aggregate status of Hécate (`GET /v1/status`), for a component with the status
+    /// permission.
+    pub async fn status(&self, addr: SocketAddr) -> Result<Reply, ComponentError> {
+        self.query(addr, "/v1/status").await
+    }
+
+    /// Resolves secrets (`POST /v1/secrets:resolve`) with its current certificate and a new
+    /// short call token. Keeping the values in a cache and refreshing them is each component's
+    /// own work, outside the tests of Hécate.
+    pub async fn resolve(
+        &self,
+        addr: SocketAddr,
+        references: &[&str],
+    ) -> Result<Reply, ComponentError> {
+        let token = self.call_token(None)?;
+        let body = serde_json::json!({ "references": references });
+        let request = Request::builder()
+            .method("POST")
+            .uri(RESOLVE)
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(body.to_string()))
+            .map_err(|error| ComponentError::Unreachable(error.to_string()))?;
+        self.send_as(addr, None, request).await
     }
 
     /// Renews its certificate with new keys and a short call token. With `from`, it shows an

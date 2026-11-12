@@ -9,6 +9,10 @@
 //! - `component keys --state <dir>` and `component key <kid> --state <dir>`: the published call
 //!   keys.
 //! - `component revocations --state <dir>`: the CRLs, which it keeps, with their revoked serials.
+//! - `component resolve <reference>... --state <dir>`: the values of its secrets, each with its
+//!   version and its cache times.
+//! - `component status --state <dir>`: the aggregate status of Hécate, with the status
+//!   permission.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -20,7 +24,19 @@ use hecate_domain::instant::isoformat;
 use hecate_infrastructure::clock::SystemClock;
 use hecate_infrastructure::testing::{ComponentError, Reply, TestComponent, read_crl};
 
-const USAGE: &str = "usage: component enroll --token <token> --state <dir> [--asks-for <id>] [--repeat]\n       component renew --state <dir> [--from <serial>]\n       component keys --state <dir>\n       component key <kid> --state <dir>\n       component revocations --state <dir>";
+const USAGE: &str = "usage: component enroll --token <token> --state <dir> [--asks-for <id>] [--repeat]\n       component renew --state <dir> [--from <serial>]\n       component keys --state <dir>\n       component key <kid> --state <dir>\n       component revocations --state <dir>\n       component resolve <reference>... --state <dir>\n       component status --state <dir>";
+
+/// The fields of the aggregate status, in the order of the contract.
+const STATUS_FIELDS: [&str; 8] = [
+    "sealed",
+    "secrets_expired",
+    "secrets_expiring_soon",
+    "secrets_due_rotation",
+    "identities_expiring_24h",
+    "suspicious_renewals_24h",
+    "intermediate_days_left",
+    "enrollment_throttled",
+];
 
 fn value_of(args: &[String], flag: &str) -> Option<String> {
     let at = args.iter().position(|arg| arg == flag)?;
@@ -67,6 +83,20 @@ async fn renew(
         .map_err(|error| fail(error, 1))
 }
 
+/// The arguments after the command that are neither a flag nor the value of one.
+fn positional(args: &[String]) -> Vec<&str> {
+    let mut found = Vec::new();
+    let mut rest = args.iter().skip(1);
+    while let Some(arg) = rest.next() {
+        if arg.starts_with("--") {
+            rest.next();
+        } else {
+            found.push(arg.as_str());
+        }
+    }
+    found
+}
+
 fn text(value: &serde_json::Value) -> &str {
     value.as_str().unwrap_or_default()
 }
@@ -90,6 +120,23 @@ fn print_data(command: &str, data: &serde_json::Value) {
             println!("expires {}", text(&data["expires_at"]));
         }
         "key" => print_key(&data["key"]),
+        "resolve" => {
+            for secret in data["secrets"].as_array().into_iter().flatten() {
+                println!(
+                    "{} version {} cache {}s/{}s: {}",
+                    text(&secret["reference"]),
+                    secret["version"],
+                    secret["cache_ttl_soft_s"],
+                    secret["cache_ttl_hard_s"],
+                    text(&secret["value"])
+                );
+            }
+        }
+        "status" => {
+            for field in STATUS_FIELDS {
+                println!("{field} {}", data[field]);
+            }
+        }
         verb => println!(
             "{}ed {} serial {} until {}",
             verb.trim_end_matches('e'),
@@ -143,6 +190,7 @@ async fn main() -> ExitCode {
         Some("enroll") => enroll(&component, addr, &args).await,
         Some("renew") => renew(&component, addr, &args).await,
         Some("keys") => component.keys(addr).await.map_err(|error| fail(error, 1)),
+        Some("status") => component.status(addr).await.map_err(|error| fail(error, 1)),
         Some("revocations") => component
             .revocations(addr)
             .await
@@ -153,6 +201,13 @@ async fn main() -> ExitCode {
                 .await
                 .map_err(|error| fail(error, 1)),
             None => return fail(USAGE, 2),
+        },
+        Some("resolve") => match positional(&args).as_slice() {
+            [] => return fail(USAGE, 2),
+            references => component
+                .resolve(addr, references)
+                .await
+                .map_err(|error| fail(error, 1)),
         },
         _ => return fail(USAGE, 2),
     };

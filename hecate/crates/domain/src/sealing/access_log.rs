@@ -57,6 +57,11 @@ text_enum!(Operation {
     KeyGet => "key_get",
     RevocationList => "revocation_list",
     CapabilitiesGet => "capabilities_get",
+    PolicyGrant => "policy_grant",
+    PolicyRevoke => "policy_revoke",
+    PolicyList => "policy_list",
+    PolicyGet => "policy_get",
+    StatusGet => "status_get",
 });
 
 text_enum!(Method {
@@ -91,4 +96,24 @@ pub struct AccessLogEntry {
     pub version: Option<u64>,
     pub identity: Option<String>,
     pub certificate: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_operations_of_the_access_policy_and_the_status_have_their_text() {
+        for (operation, text) in [
+            (Operation::PolicyGrant, "policy_grant"),
+            (Operation::PolicyRevoke, "policy_revoke"),
+            (Operation::PolicyList, "policy_list"),
+            (Operation::PolicyGet, "policy_get"),
+            (Operation::StatusGet, "status_get"),
+        ] {
+            assert_eq!(operation.as_str(), text);
+            assert_eq!(Operation::parse(text), Some(operation));
+        }
+        assert_eq!(Operation::parse("policy"), None);
+    }
 }

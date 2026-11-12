@@ -138,6 +138,7 @@ pub fn ca_handler(rig: &CaRig) -> (RequestHandler, Arc<AtomicUsize>) {
         IdentityOperations {
             ca: rig.service.clone(),
             identities: rig.identities.clone(),
+            policies: rig.policies.clone(),
             changed: Arc::new(move || {
                 counter.fetch_add(1, Ordering::SeqCst);
             }),
@@ -214,19 +215,16 @@ pub fn sign_renewal(rig: &CaRig, root_key: &RootCaKey, root_der: &[u8], request:
 
 use std::net::SocketAddr;
 
-use hecate_infrastructure::api::routes::{refusals, routes};
-use hecate_infrastructure::api::server::SealedCheck;
+use hecate_infrastructure::api::routes::{refusals, routes, sealed_check};
 use hecate_infrastructure::api::supervisor::ApiSupervisor;
 
 /// The API of a rig, with the operations of the components, on a free port of 127.0.0.1.
 pub fn api_supervisor(rig: &CaRig) -> Arc<ApiSupervisor> {
-    let sealing = rig.sealing.clone();
-    let sealed: SealedCheck = Arc::new(move || sealing.unsealed_epoch().is_err());
     Arc::new(ApiSupervisor::new(
         "127.0.0.1:0".parse().unwrap(),
         rig.service.clone(),
         routes(rig.identities.clone()),
-        sealed,
+        sealed_check(rig.sealing.clone()),
         refusals(rig.identities.clone()),
     ))
 }
@@ -241,6 +239,7 @@ pub fn api_handler(rig: &CaRig, supervisor: &Arc<ApiSupervisor>) -> Arc<RequestH
         IdentityOperations {
             ca: rig.service.clone(),
             identities: rig.identities.clone(),
+            policies: rig.policies.clone(),
             changed: Arc::new(move || {
                 runtime.block_on(supervisor.tick()).unwrap();
             }),
@@ -476,13 +475,11 @@ pub async fn a_year_of_data(revoked: bool) -> YearOfData {
         )
         .unwrap();
     a_year_of_certificates(&stack, revoked);
-    let sealing = stack.sealing.clone();
-    let sealed: SealedCheck = Arc::new(move || sealing.unsealed_epoch().is_err());
     let supervisor = ApiSupervisor::new(
         "127.0.0.1:0".parse().unwrap(),
         stack.ca.clone(),
         routes(stack.identities.clone()),
-        sealed,
+        sealed_check(stack.sealing.clone()),
         refusals(stack.identities.clone()),
     );
     supervisor.refresh().await.unwrap();
@@ -503,4 +500,89 @@ pub async fn a_year_of_data(revoked: bool) -> YearOfData {
         stack,
         dirs: (dir, caller_dir),
     }
+}
+
+// --- Feature 006: secrets that the components resolve ------------------------------------------
+
+use hecate_application::ca::settings::CaSettings;
+use hecate_application::identity::settings::IdentitySettings;
+
+/// A rig whose identities have settings of their own, such as a lower refusal floor.
+pub fn ca_rig_with(settings: IdentitySettings) -> CaRig {
+    CaRig::configured(
+        crypto(),
+        Arc::new(RcgenPki::new()),
+        Arc::new(JwtCallTokenVerifier::new()),
+        CaSettings::default(),
+        settings,
+    )
+}
+
+/// Stores a secret of type `string` in the rig.
+pub fn store_secret(rig: &CaRig, path: &str, value: &str) {
+    rig.secrets
+        .create(path, value, "string", &no_options())
+        .unwrap();
+}
+
+/// Revokes a version of a secret of the rig.
+pub fn revoke_secret(rig: &CaRig, path: &str, version: u64) {
+    let expected = rig.secrets.get(path).unwrap().stream_version;
+    rig.secrets
+        .revoke(path, &json!(version), &json!(expected))
+        .unwrap();
+}
+
+/// A Hécate on SQLite, unsealed and with a CA, as after the ceremony.
+pub fn sqlite_with_ca(db: &Path, clock: Arc<FakeClock>) -> SqliteStack {
+    let stack = SqliteStack::open(db, clock.clone());
+    initialize(&stack.sealing, GOOD_PASSPHRASE);
+    stack
+        .sealing
+        .unseal_with_passphrase(GOOD_PASSPHRASE)
+        .unwrap();
+    let begun = stack.ca.create_begin(TRUST_DOMAIN, CA_PASSPHRASE).unwrap();
+    let root_key = RootCaKey::generate().unwrap();
+    let now = clock.now();
+    let root = root_key
+        .root_certificate(
+            &TrustDomain::parse(TRUST_DOMAIN).unwrap(),
+            &ca_serial(0x9f),
+            now,
+        )
+        .unwrap();
+    let intermediate = root_key
+        .sign_intermediate(&root, &begun.intermediate_csr, &ca_serial(0x9e), now)
+        .unwrap();
+    stack
+        .ca
+        .create_confirm(
+            &begun.ceremony_id,
+            &pem::encode("CERTIFICATE", &root),
+            &pem::encode("CERTIFICATE", &intermediate),
+        )
+        .unwrap();
+    stack
+}
+
+/// A component enrolled on a stack through the use case, without the API.
+pub fn enrolled_on(
+    stack: &SqliteStack,
+    dir: &Path,
+    name: &str,
+    clock: Arc<FakeClock>,
+) -> TestComponent {
+    let component = TestComponent::open(dir, clock).unwrap();
+    let token = stack
+        .identities
+        .tokens_create(name)
+        .unwrap()
+        .token
+        .to_string();
+    let (body, key) = component.enrollment(&token).unwrap();
+    let enrolled = stack.identities.enroll(Some(&key), &body).unwrap();
+    component
+        .accept_enrollment(&enrolled.certificate, &enrolled.chain)
+        .unwrap();
+    component
 }

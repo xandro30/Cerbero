@@ -82,7 +82,7 @@ fn create_accepts_optional_metadata() {
     let (_rig, handler) = make(true);
     let reply = create_with(
         &handler,
-        json!({"max_versions": 4, "rotate_every": "30d", "expires_at": "2027-01-01T00:00:00+00:00"}),
+        json!({"max_versions": 4, "rotate_every": "P30D", "expires_at": "2027-01-01T00:00:00+00:00"}),
     );
     assert_eq!(reply["status"], "completed");
     let got = get(&handler);
@@ -94,7 +94,7 @@ fn create_accepts_optional_metadata() {
         ),
         (
             &json!(4),
-            &json!("30d"),
+            &json!("P30D"),
             &json!("2027-01-01T00:00:00+00:00")
         )
     );
@@ -171,6 +171,7 @@ fn validation_errors() {
         ),
         ("secrets.create", base(json!({"rotate_every": "90\nd"}))),
         ("secrets.create", base(json!({"rotate_every": 90}))),
+        ("secrets.create", base(json!({"rotate_every": "90d"}))),
         ("secrets.create", base(json!({"expires_at": "tomorrow"}))),
         ("secrets.create", base(json!({"expires_at": 20270101}))),
         (

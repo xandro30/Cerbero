@@ -97,6 +97,8 @@ async fn the_crls_answer_the_fields_of_the_contract() {
             "revocations",
             "keys",
             "keys/{kid}",
+            "secrets:resolve",
+            "status",
             "capabilities"
         ])
     );

@@ -4,12 +4,15 @@
 
 use std::sync::Arc;
 
+use hecate_application::access_policy::service::{AccessPolicyService, PolicyChange};
 use hecate_application::ca::service::{CaService, CaSummary};
 use hecate_application::identity::service::{IdentityCounts, IdentityService};
 use hecate_application::sealing::service::{SealingService, Status, Unsealed};
 use hecate_application::secrets::service::{
     Added, CreateOptions, Created, SecretDetails, SecretSummary, SecretsService,
 };
+use hecate_domain::access_policy::policy::AccessPolicy;
+use hecate_domain::events::PolicyEvent;
 use hecate_domain::identity::names::Serial;
 use hecate_domain::instant::isoformat;
 use hecate_domain::sealing::access_log::{Method, Operation};
@@ -80,11 +83,12 @@ fn unsealed_data(unsealed: &Unsealed) -> Value {
     })
 }
 
-/// The operations of the CA and of the identities, and what the channel tells when what the API
-/// presents may change.
+/// The operations of the CA, of the identities and of their Access Policy, and what the channel
+/// tells when what the API presents may change.
 pub struct IdentityOperations {
     pub ca: Arc<CaService>,
     pub identities: Arc<IdentityService>,
+    pub policies: Arc<AccessPolicyService>,
     /// Runs after the CA is created or replaced, after an unseal, after Hécate's certificate is
     /// replaced and after the intermediate is renewed: the supervisor of the API renews Hécate's
     /// certificate if it is due and starts, replaces or stops the listener.
@@ -111,6 +115,19 @@ fn identity_audited(op: &str) -> Option<(Operation, &'static str)> {
         "identities.disable" => (Operation::IdentityDisable, "disable"),
         "identities.enable" => (Operation::IdentityEnable, "enable"),
         "certificates.revoke" => (Operation::CertificateRevoke, "revoke"),
+        _ => return None,
+    })
+}
+
+/// The operation and detail of the row that a refused request on the Access Policy leaves.
+fn policy_audited(op: &str) -> Option<(Operation, &'static str)> {
+    Some(match op {
+        "policies.grant_read" => (Operation::PolicyGrant, "read"),
+        "policies.revoke_read" => (Operation::PolicyRevoke, "read"),
+        "policies.grant_status" => (Operation::PolicyGrant, "status"),
+        "policies.revoke_status" => (Operation::PolicyRevoke, "status"),
+        "policies.list" => (Operation::PolicyList, "list"),
+        "policies.get" => (Operation::PolicyGet, "get"),
         _ => return None,
     })
 }
@@ -265,6 +282,132 @@ fn register_identities(handler: &mut RequestHandler, ops: &IdentityOperations) {
                 "serial": revoked.serial.as_str(),
                 "reissued": revoked.reissued.as_ref().map(Serial::as_str),
             }))
+        }),
+    );
+}
+
+/// The arguments of an operation of the Access Policy are exactly its own: one missing or one
+/// more is `validation` (contracts/control-protocol.md).
+fn exact_args(args: &Map<String, Value>, names: &[&str]) -> Result<(), OpError> {
+    if args.keys().all(|key| names.contains(&key.as_str())) {
+        return Ok(());
+    }
+    Err(OpError::Arg(if names.is_empty() {
+        "this operation takes no arguments".to_string()
+    } else {
+        format!("the arguments are {}", names.join(" and "))
+    }))
+}
+
+fn change_data(change: &PolicyChange) -> Value {
+    let mut data = json!({
+        "identity": change.identity.as_str(),
+        "version": change.version,
+        "changed": change.changed,
+    });
+    if let Some(secret) = &change.secret {
+        data["secret"] = json!(secret.to_string());
+    }
+    data
+}
+
+fn change_name(event: &PolicyEvent) -> &'static str {
+    match event {
+        PolicyEvent::ReadGranted { .. } => "read_granted",
+        PolicyEvent::ReadRevoked { .. } => "read_revoked",
+        PolicyEvent::StatusGranted { .. } => "status_granted",
+        PolicyEvent::StatusRevoked { .. } => "status_revoked",
+    }
+}
+
+/// A policy as `policies.list` shows it: what it grants now, without its own secrets.
+fn policy_data(policy: &AccessPolicy) -> Value {
+    json!({
+        "identity": policy.identity.as_str(),
+        "reads": policy.reads().collect::<Vec<_>>(),
+        "status": policy.has_status(),
+        "version": policy.version,
+    })
+}
+
+/// A policy with its history, as `policies.get` shows it: each version with its change, who made
+/// it and when.
+fn policy_detail(policy: &AccessPolicy) -> Value {
+    let history: Vec<Value> = policy
+        .history
+        .iter()
+        .zip(1u64..)
+        .map(|(event, version)| {
+            json!({
+                "version": version,
+                "change": change_name(event),
+                "secret": event.secret().map(ToString::to_string),
+                "at": isoformat(event.at()),
+                "by": event.by().as_str(),
+            })
+        })
+        .collect();
+    let mut data = policy_data(policy);
+    data["history"] = json!(history);
+    data
+}
+
+fn register_policies(handler: &mut RequestHandler, policies: &Arc<AccessPolicyService>) {
+    let service = policies.clone();
+    handler.register(
+        "policies.grant_read",
+        Box::new(move |args| {
+            exact_args(args, &["identity", "secret"])?;
+            let change =
+                service.grant_read(&text_arg(args, "identity")?, &text_arg(args, "secret")?)?;
+            Ok(change_data(&change))
+        }),
+    );
+    let service = policies.clone();
+    handler.register(
+        "policies.revoke_read",
+        Box::new(move |args| {
+            exact_args(args, &["identity", "secret"])?;
+            let change =
+                service.revoke_read(&text_arg(args, "identity")?, &text_arg(args, "secret")?)?;
+            Ok(change_data(&change))
+        }),
+    );
+    let service = policies.clone();
+    handler.register(
+        "policies.grant_status",
+        Box::new(move |args| {
+            exact_args(args, &["identity"])?;
+            Ok(change_data(
+                &service.grant_status(&text_arg(args, "identity")?)?,
+            ))
+        }),
+    );
+    let service = policies.clone();
+    handler.register(
+        "policies.revoke_status",
+        Box::new(move |args| {
+            exact_args(args, &["identity"])?;
+            Ok(change_data(
+                &service.revoke_status(&text_arg(args, "identity")?)?,
+            ))
+        }),
+    );
+    let service = policies.clone();
+    handler.register(
+        "policies.list",
+        Box::new(move |args| {
+            exact_args(args, &[])?;
+            let policies: Vec<Value> = service.list()?.iter().map(policy_data).collect();
+            Ok(json!({"policies": policies}))
+        }),
+    );
+    let service = policies.clone();
+    handler.register(
+        "policies.get",
+        Box::new(move |args| {
+            exact_args(args, &["identity"])?;
+            Ok(policy_detail(&service.get(&text_arg(args, "identity")?)?))
         }),
     );
 }
@@ -574,6 +717,14 @@ fn record_refused(
     op: &str,
     args: &Map<String, Value>,
 ) {
+    if let Some((operation, detail)) = policy_audited(op) {
+        if let Some(ops) = identities
+            && let Err(error) = ops.policies.record_invalid_request(operation, detail)
+        {
+            tracing::error!(target: "hecate.control", op, exception = error.kind(), "unexpected error");
+        }
+        return;
+    }
     if let Some((operation, detail)) = identity_audited(op) {
         let recorded = match identities {
             Some(ops)
@@ -651,6 +802,7 @@ fn build(
                 let counts = secrets.expiry_counts(None)?;
                 data["secrets_expired"] = json!(counts.secrets_expired);
                 data["secrets_expiring_soon"] = json!(counts.secrets_expiring_soon);
+                data["secrets_due_rotation"] = json!(counts.secrets_due_rotation);
             }
             if let Some((ca, identities)) = &status_ca {
                 data["ca"] = ca_status(
@@ -768,6 +920,7 @@ fn build(
         register_ca(&mut handler, ops);
         register_tokens(&mut handler, &ops.identities);
         register_identities(&mut handler, ops);
+        register_policies(&mut handler, &ops.policies);
     }
     handler.on_refused(Box::new(move |op, args| {
         record_refused(&sealing, secrets.as_deref(), ca.as_ref(), op, args)

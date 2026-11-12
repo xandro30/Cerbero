@@ -118,7 +118,7 @@ Ver también: [README](README.md) · [ARCHITECTURE](ARCHITECTURE.md)
 | **Sensor** | Orthros | Capacidad de observación enchufable dentro del Agent (process, connection, dns, network...). Un mismo Sensor tiene una implementación por sistema operativo. |
 | **Profile** | Orthros | Tipología de equipo (Linux, macOS, Windows, Android, iOS, IoT...). Determina qué Policy recibe un Agent. |
 | **Policy** | Orthros | Configuración versionada y firmada que Orthros publica para un Profile: Flags, Filters, Aggregations y Parsers. |
-| **Access Policy** | Hécate | Qué rutas de secretos y qué operaciones puede usar una identidad. Versionada; sus permisos salen de lo que declaran instancias e integraciones. No confundir con la Policy de Orthros. |
+| **Access Policy** | Hécate | Lo que una identidad puede usar además de sus propios secretos (`secret://<su identidad>/**`, la regla por defecto, que no se guarda): las excepciones del admin, cada una para leer un secreto concreto de otra identidad, sin comodines; el permiso de estado, que deja consultar los recuentos agregados de Hécate; y los permisos que salen de lo que declaran instancias e integraciones. Versionada, con quién hizo cada cambio. No confundir con la Policy de Orthros. |
 | **Flag** | Orthros | Activación o desactivación de un Sensor dentro de una Policy. |
 | **Filter** | Orthros | Regla de descarte ejecutada en el Agent para no enviar datos de bajo valor. |
 | **Aggregation** | Orthros | Regla que resume en el Agent eventos repetidos en un único registro con contador. |

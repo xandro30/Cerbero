@@ -1,8 +1,10 @@
 //! The common envelope of the API (contracts/api.md): the same shape as the local channel, the
 //! closed codes with the HTTP status that Hécate fixes, `Retry-After` and `X-Request-Id`.
 
+use std::io;
 use std::time::Instant;
 
+use axum::body::{Body, Bytes};
 use axum::extract::{FromRequestParts, Request, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderValue, StatusCode, header};
@@ -13,7 +15,9 @@ use hecate_application::errors::ServiceError;
 use hecate_application::identity::service::CallRefusal;
 use hecate_domain::sealing::errors::HecateError;
 use hecate_domain::sealing::state::SealState;
+use serde::Serialize;
 use serde_json::{Map, Value};
+use zeroize::Zeroizing;
 
 use crate::api::server::{RefusalRecorder, record_refusal};
 use crate::control::protocol::{Envelope, ErrorBody, Meta};
@@ -155,6 +159,75 @@ impl RequestContext {
         };
         json_response(error.status(), &envelope, error.retry_after_s())
     }
+
+    /// A completed answer whose data carries secrets: the envelope of [`Self::completed`], with
+    /// `duration_ms` taken once when it is built, in a buffer of exactly its size that is wiped
+    /// when hyper drops the body (FR-016, research R6).
+    pub fn completed_with_secrets(&self, data: &impl Serialize) -> Response {
+        self.completed_owned(data, |bytes| bytes)
+    }
+
+    /// The same, with the buffer in an owner of the caller's, which the body keeps until hyper
+    /// drops it.
+    pub fn completed_owned<O>(
+        &self,
+        data: &impl Serialize,
+        owner: impl FnOnce(Zeroizing<Vec<u8>>) -> O,
+    ) -> Response
+    where
+        O: AsRef<[u8]> + Send + 'static,
+    {
+        let envelope = SecretEnvelope {
+            status: "completed",
+            data,
+            error: None,
+            meta: self.meta(),
+        };
+        let Ok(bytes) = wiped_json(&envelope) else {
+            return self.failed(&ApiError::Internal);
+        };
+        let mut response = Response::new(Body::from(Bytes::from_owner(owner(bytes))));
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        response
+    }
+}
+
+/// The envelope of an answer whose data carries secrets: the members of `Envelope`, with the
+/// data serialized where it is instead of copied into a `Value`.
+#[derive(Serialize)]
+struct SecretEnvelope<'a, D> {
+    status: &'static str,
+    data: &'a D,
+    error: Option<ErrorBody>,
+    meta: Meta,
+}
+
+/// Counts the bytes written to it, to size a buffer before writing into it.
+struct Counter(usize);
+
+impl io::Write for Counter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0 += bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The JSON of a value that carries secrets (research R6) in a buffer of exactly its size: a first
+/// pass counts the bytes and a second writes them, so the buffer never grows and leaves no copies
+/// behind. It is wiped when dropped.
+pub fn wiped_json(value: &impl Serialize) -> serde_json::Result<Zeroizing<Vec<u8>>> {
+    let mut counter = Counter(0);
+    serde_json::to_writer(&mut counter, value)?;
+    let mut buffer = Zeroizing::new(Vec::with_capacity(counter.0));
+    serde_json::to_writer(&mut *buffer, value)?;
+    Ok(buffer)
 }
 
 fn json_response(status: StatusCode, envelope: &Envelope, retry_after_s: Option<u64>) -> Response {

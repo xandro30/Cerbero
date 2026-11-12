@@ -157,3 +157,169 @@ fn a_response_is_checked_against_its_operation_and_status() {
             .is_err()
     );
 }
+
+// --- Feature 006: the resolution and the status (T002) ------------------------------------------
+
+fn completed(data: Value) -> Value {
+    json!({
+        "status": "completed",
+        "data": data,
+        "error": null,
+        "meta": {"request_id": "req-1", "duration_ms": 251},
+    })
+}
+
+fn resolved() -> Value {
+    let secret = |reference: &str, version: u64| {
+        json!({
+            "reference": reference,
+            "version": version,
+            "value": "123456:ABC-DEF",
+            "cache_ttl_soft_s": 300,
+            "cache_ttl_hard_s": 3600,
+        })
+    };
+    completed(json!({
+        "secrets": [
+            secret("secret://hermes/telegram/bot_token", 4),
+            secret("secret://hades/smtp/password@3", 3),
+        ],
+    }))
+}
+
+fn aggregate_status() -> Value {
+    completed(json!({
+        "sealed": false,
+        "secrets_expired": 0,
+        "secrets_expiring_soon": 1,
+        "secrets_due_rotation": 2,
+        "identities_expiring_24h": 0,
+        "suspicious_renewals_24h": 0,
+        "intermediate_days_left": null,
+        "enrollment_throttled": false,
+    }))
+}
+
+#[test]
+fn a_resolution_request_carries_one_to_a_hundred_references() {
+    let contract = Contract::load();
+    let schema = contract.hecate_schema("ResolveRequest");
+    let request = |count: usize| {
+        let references: Vec<String> = (0..count)
+            .map(|n| format!("secret://hermes/service/key_{n}"))
+            .collect();
+        json!({ "references": references })
+    };
+    for count in [1, 100] {
+        contract.check_schema(&schema, &request(count)).unwrap();
+    }
+    for count in [0, 101] {
+        assert!(
+            contract.check_schema(&schema, &request(count)).is_err(),
+            "{count}"
+        );
+    }
+    let repeated = json!({
+        "references": ["secret://hades/smtp/password@3", "secret://hades/smtp/password@3"],
+    });
+    contract.check_schema(&schema, &repeated).unwrap();
+    for wrong in [
+        "secret://hermes",
+        "secret://Hermes/key",
+        "secret://hermes/Key",
+        "secret://hermes/key@0",
+        "secret://hermes/key@01",
+        "secret://hermes/key@1000000000",
+        "hermes/key",
+    ] {
+        let request = json!({ "references": [wrong] });
+        assert!(contract.check_schema(&schema, &request).is_err(), "{wrong}");
+    }
+    let mut extra = request(1);
+    extra["idempotency_key"] = json!("k");
+    assert!(contract.check_schema(&schema, &extra).is_err());
+}
+
+#[test]
+fn a_resolution_follows_its_contract() {
+    let contract = Contract::load();
+    contract.assert_valid("resolveSecrets", 200, &resolved());
+    let mut extra = resolved();
+    extra["data"]["secrets"][0]["fingerprint"] = json!("a fingerprint");
+    assert!(contract.check("resolveSecrets", 200, &extra).is_err());
+    let mut missing = resolved();
+    missing["data"]["secrets"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("cache_ttl_hard_s");
+    assert!(contract.check("resolveSecrets", 200, &missing).is_err());
+    let mut empty = resolved();
+    empty["data"]["secrets"] = json!([]);
+    assert!(contract.check("resolveSecrets", 200, &empty).is_err());
+    for (status, code) in [
+        (400, "validation"),
+        (401, "auth"),
+        (404, "not_found"),
+        (500, "internal"),
+        (503, "unavailable"),
+    ] {
+        contract.assert_valid("resolveSecrets", status, &failed(code));
+    }
+    assert!(
+        contract
+            .check("resolveSecrets", 409, &failed("conflict"))
+            .is_err()
+    );
+    assert!(
+        contract
+            .check("resolveSecrets", 429, &failed("rate_limited"))
+            .is_err()
+    );
+}
+
+#[test]
+fn a_status_follows_its_contract() {
+    let contract = Contract::load();
+    contract.assert_valid("getStatus", 200, &aggregate_status());
+    let mut sealed = aggregate_status();
+    sealed["data"]["sealed"] = json!(true);
+    sealed["data"]["intermediate_days_left"] = json!(30);
+    contract.assert_valid("getStatus", 200, &sealed);
+    let mut beyond = aggregate_status();
+    beyond["data"]["intermediate_days_left"] = json!(31);
+    assert!(contract.check("getStatus", 200, &beyond).is_err());
+    let mut extra = aggregate_status();
+    extra["data"]["identities"] = json!(["hermes"]);
+    assert!(contract.check("getStatus", 200, &extra).is_err());
+    let mut missing = aggregate_status();
+    missing["data"]
+        .as_object_mut()
+        .unwrap()
+        .remove("secrets_due_rotation");
+    assert!(contract.check("getStatus", 200, &missing).is_err());
+    for (status, code) in [(400, "validation"), (401, "auth"), (500, "internal")] {
+        contract.assert_valid("getStatus", status, &failed(code));
+    }
+    assert!(
+        contract
+            .check("getStatus", 503, &failed("unavailable"))
+            .is_err()
+    );
+    assert!(
+        contract
+            .check("getStatus", 404, &failed("not_found"))
+            .is_err()
+    );
+}
+
+#[test]
+fn the_capabilities_may_list_the_resolution_and_the_status() {
+    let contract = Contract::load();
+    let capabilities = completed(json!({
+        "component": "hecate",
+        "api": "v1",
+        "operations": ["identities:enroll", "certificates:renew", "revocations", "keys",
+                       "keys/{kid}", "secrets:resolve", "status", "capabilities"],
+    }));
+    contract.assert_valid("getCapabilities", 200, &capabilities);
+}

@@ -16,8 +16,7 @@ use hecate_application::ports::{Clock, CryptoProvider, IdentityStore};
 use hecate_application::testing::{FakeClock, GOOD_PASSPHRASE, MINIMAL_KDF, initialize};
 use hecate_domain::identity::names::{RootFingerprint, TrustDomain};
 use hecate_domain::pem;
-use hecate_infrastructure::api::routes::{refusals, routes};
-use hecate_infrastructure::api::server::SealedCheck;
+use hecate_infrastructure::api::routes::{refusals, routes, sealed_check};
 use hecate_infrastructure::api::supervisor::ApiSupervisor;
 use hecate_infrastructure::backup::seal_backup;
 use hecate_infrastructure::config::HecateConfig;
@@ -36,6 +35,10 @@ use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
 const SECOND_CA_PASSPHRASE: &str = "harbor violet engine 77";
 const WRONG: &str = "a wrong passphrase!!";
+const RESOLVED_TEXT_PATH: &str = "secret://hermes/telegram/bot_token";
+const RESOLVED_TEXT: &str = "kingfisher-resolved-value-4217";
+const RESOLVED_JSON_PATH: &str = "secret://hermes/smtp/credentials";
+const RESOLVED_JSON: &str = "{\"password\": \"heron-json-value-9031\"}";
 
 enum Secret {
     Text(String),
@@ -261,13 +264,11 @@ async fn no_token_passphrase_or_key_reaches_the_database_the_logs_or_the_replies
         .sealing
         .unseal_with_passphrase(GOOD_PASSPHRASE)
         .unwrap();
-    let sealing = stack.sealing.clone();
-    let sealed: SealedCheck = Arc::new(move || sealing.unsealed_epoch().is_err());
     let supervisor = Arc::new(ApiSupervisor::new(
         "127.0.0.1:0".parse().unwrap(),
         stack.ca.clone(),
         routes(stack.identities.clone()),
-        sealed,
+        sealed_check(stack.sealing.clone()),
         refusals(stack.identities.clone()),
     ));
     let runtime = tokio::runtime::Handle::current();
@@ -278,6 +279,7 @@ async fn no_token_passphrase_or_key_reaches_the_database_the_logs_or_the_replies
         IdentityOperations {
             ca: stack.ca.clone(),
             identities: stack.identities.clone(),
+            policies: stack.policies.clone(),
             changed: Arc::new(move || runtime.block_on(ticking.tick()).unwrap()),
         },
     ));
@@ -389,6 +391,56 @@ async fn no_token_passphrase_or_key_reaches_the_database_the_logs_or_the_replies
     replies.extend(api.iter().map(|reply| reply.body.to_string()));
     let status = ask(&handler, "status", json!({})).await;
     replies.push(status.to_string());
+
+    // T016 and T051: resolutions, served and refused. The values travel only in the served reply,
+    // which is not among the replies checked; no row, log line or error reply holds a value or its
+    // fingerprint (SC-004). The fingerprints live in the events of their secrets (feature 002):
+    // the resolutions write no event, so the base gains nothing from them but their rows, where
+    // the fingerprints are looked for together with the logs and the replies.
+    let fingerprints: Vec<Secret> = [
+        (RESOLVED_TEXT_PATH, RESOLVED_TEXT, "string"),
+        (RESOLVED_JSON_PATH, RESOLVED_JSON, "json"),
+    ]
+    .iter()
+    .map(|(path, value, value_type)| {
+        let created = stack
+            .service
+            .create(path, value, value_type, &no_options())
+            .unwrap();
+        text(&created.fingerprint)
+    })
+    .collect();
+    let events_before = events_in(&config.db_path());
+    let served = again
+        .resolve(addr, &[RESOLVED_TEXT_PATH, RESOLVED_JSON_PATH])
+        .await
+        .unwrap();
+    assert_eq!(served.status, 200, "{}", served.body);
+    let mut refused_resolutions = Vec::new();
+    for references in [
+        vec![RESOLVED_TEXT_PATH, "secret://hades/smtp/password"],
+        vec!["not a reference"],
+    ] {
+        refused_resolutions.push(again.resolve(addr, &references).await.unwrap());
+    }
+    assert_eq!(
+        refused_resolutions
+            .iter()
+            .map(|reply| reply.status)
+            .collect::<Vec<_>>(),
+        vec![404, 400]
+    );
+    replies.extend(
+        refused_resolutions
+            .iter()
+            .map(|reply| reply.body.to_string()),
+    );
+    assert_eq!(
+        events_in(&config.db_path()),
+        events_before,
+        "the resolutions write no event"
+    );
+    let rows = format!("{:?}", stack.access_log.entries().unwrap());
     supervisor.shutdown().await;
     drop(handler);
     stack.close();
@@ -398,6 +450,8 @@ async fn no_token_passphrase_or_key_reaches_the_database_the_logs_or_the_replies
         text(CA_PASSPHRASE),
         text(SECOND_CA_PASSPHRASE),
         text(WRONG),
+        text(RESOLVED_TEXT),
+        text(RESOLVED_JSON),
     ];
     for side in [&first, &second] {
         secrets.push(Secret::Bytes(side.key.pkcs8().expose().to_vec()));
@@ -478,6 +532,39 @@ async fn no_token_passphrase_or_key_reaches_the_database_the_logs_or_the_replies
         "token found in a reply"
     );
     assert_eq!(leaks(with_tokens.concat().as_bytes(), &everything), 0);
+    for (place, blob) in [
+        ("the rows", &rows),
+        ("the logs", &lines),
+        ("a reply", &replies),
+    ] {
+        assert_eq!(
+            leaks(blob.as_bytes(), &fingerprints),
+            0,
+            "fingerprint found in {place}"
+        );
+    }
+    assert!(leaks(served.body.to_string().as_bytes(), &[text(RESOLVED_TEXT)]) > 0);
+}
+
+/// Every event of the base, in the order of their streams and versions.
+fn events_in(db: &std::path::Path) -> Vec<(String, i64, String, String, String)> {
+    let connection = rusqlite::Connection::open(db).unwrap();
+    let mut query = connection
+        .prepare("SELECT stream, version, type, data, at FROM events ORDER BY stream, version")
+        .unwrap();
+    query
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
 }
 
 /// Hécate's key as the database keeps it, read after the end of the process.

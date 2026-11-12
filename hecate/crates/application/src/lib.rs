@@ -1,3 +1,4 @@
+pub mod access_policy;
 pub mod ca;
 pub mod errors;
 pub mod identity;

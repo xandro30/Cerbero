@@ -9,6 +9,7 @@ use time::OffsetDateTime;
 use crate::identity::call_key::CallKey;
 use crate::identity::names::{IdentityName, RootFingerprint, Serial, TokenId, TrustDomain};
 use crate::instant::{isoformat, parse_iso};
+use crate::secrets::path::SecretPath;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EventRecord {
@@ -756,6 +757,130 @@ impl CertificateEvent {
     }
 }
 
+// The events of the Access Policy (data-model): one stream per identity, `policy/<identity>`,
+// that exists only once the admin has changed something in it. None carries a value.
+
+event_enum!(
+    /// Who changed an Access Policy: the admin, from the local channel.
+    ChangedBy {
+        Admin => "admin",
+    }
+);
+
+/// The events of the Access Policy of an identity (stream `policy/<identity>`): the reads of
+/// another identity's secret and the status permission, granted and revoked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicyEvent {
+    ReadGranted {
+        at: OffsetDateTime,
+        secret: SecretPath,
+        by: ChangedBy,
+    },
+    ReadRevoked {
+        at: OffsetDateTime,
+        secret: SecretPath,
+        by: ChangedBy,
+    },
+    StatusGranted {
+        at: OffsetDateTime,
+        by: ChangedBy,
+    },
+    StatusRevoked {
+        at: OffsetDateTime,
+        by: ChangedBy,
+    },
+}
+
+impl PolicyEvent {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::ReadGranted { .. } => "ReadGranted",
+            Self::ReadRevoked { .. } => "ReadRevoked",
+            Self::StatusGranted { .. } => "StatusGranted",
+            Self::StatusRevoked { .. } => "StatusRevoked",
+        }
+    }
+
+    pub fn at(&self) -> OffsetDateTime {
+        match self {
+            Self::ReadGranted { at, .. }
+            | Self::ReadRevoked { at, .. }
+            | Self::StatusGranted { at, .. }
+            | Self::StatusRevoked { at, .. } => *at,
+        }
+    }
+
+    pub fn by(&self) -> ChangedBy {
+        match self {
+            Self::ReadGranted { by, .. }
+            | Self::ReadRevoked { by, .. }
+            | Self::StatusGranted { by, .. }
+            | Self::StatusRevoked { by, .. } => *by,
+        }
+    }
+
+    /// The secret of a read; none for the status permission.
+    pub fn secret(&self) -> Option<&SecretPath> {
+        match self {
+            Self::ReadGranted { secret, .. } | Self::ReadRevoked { secret, .. } => Some(secret),
+            Self::StatusGranted { .. } | Self::StatusRevoked { .. } => None,
+        }
+    }
+
+    pub fn encode(&self) -> EventRecord {
+        let mut data = event_data(vec![("by", Value::from(self.by().as_str()))]);
+        if let Some(secret) = self.secret() {
+            data.insert("secret".to_string(), Value::from(secret.to_string()));
+        }
+        EventRecord {
+            kind: self.kind().to_string(),
+            data,
+            at: self.at(),
+        }
+    }
+
+    pub fn decode(record: &EventRecord) -> Result<Self, InvalidEvents> {
+        let at = record.at;
+        let by = |fields: &Fields<'_>| ChangedBy::parse(&fields.text("by")?);
+        let secret = |fields: &Fields<'_>| {
+            SecretPath::parse(&fields.text("secret")?).map_err(|_| invalid_field())
+        };
+        match record.kind.as_str() {
+            "ReadGranted" => {
+                let fields = Fields::exactly(record, &["secret", "by"])?;
+                Ok(Self::ReadGranted {
+                    at,
+                    secret: secret(&fields)?,
+                    by: by(&fields)?,
+                })
+            }
+            "ReadRevoked" => {
+                let fields = Fields::exactly(record, &["secret", "by"])?;
+                Ok(Self::ReadRevoked {
+                    at,
+                    secret: secret(&fields)?,
+                    by: by(&fields)?,
+                })
+            }
+            "StatusGranted" => {
+                let fields = Fields::exactly(record, &["by"])?;
+                Ok(Self::StatusGranted {
+                    at,
+                    by: by(&fields)?,
+                })
+            }
+            "StatusRevoked" => {
+                let fields = Fields::exactly(record, &["by"])?;
+                Ok(Self::StatusRevoked {
+                    at,
+                    by: by(&fields)?,
+                })
+            }
+            _ => Err(InvalidEvents("unknown policy event")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::Value;
@@ -1157,6 +1282,85 @@ mod tests {
                 .data
                 .insert("reason".into(), Value::from("other"));
             assert!(CaEvent::decode(&bad_reason).is_err());
+        }
+    }
+
+    mod policies {
+        use time::macros::datetime;
+
+        use super::super::*;
+        use crate::secrets::path::SecretPath;
+
+        const AT: OffsetDateTime = datetime!(2026-11-11 10:00:00.123456 UTC);
+        const SMTP: &str = "secret://hades/smtp/password";
+
+        fn record(kind: &str, data: Value) -> EventRecord {
+            EventRecord {
+                kind: kind.to_string(),
+                data: data.as_object().unwrap().clone(),
+                at: AT,
+            }
+        }
+
+        #[test]
+        fn policy_events_round_trip_with_their_secret_and_who_changed_them() {
+            let secret = SecretPath::parse(SMTP).unwrap();
+            let by = ChangedBy::Admin;
+            for (event, data) in [
+                (
+                    PolicyEvent::ReadGranted {
+                        at: AT,
+                        secret: secret.clone(),
+                        by,
+                    },
+                    serde_json::json!({"secret": SMTP, "by": "admin"}),
+                ),
+                (
+                    PolicyEvent::ReadRevoked { at: AT, secret, by },
+                    serde_json::json!({"secret": SMTP, "by": "admin"}),
+                ),
+                (
+                    PolicyEvent::StatusGranted { at: AT, by },
+                    serde_json::json!({"by": "admin"}),
+                ),
+                (
+                    PolicyEvent::StatusRevoked { at: AT, by },
+                    serde_json::json!({"by": "admin"}),
+                ),
+            ] {
+                let encoded = event.encode();
+                assert_eq!(encoded, record(event.kind(), data), "{event:?}");
+                assert_eq!(PolicyEvent::decode(&encoded).unwrap(), event);
+                assert_eq!(event.at(), AT);
+            }
+        }
+
+        #[test]
+        fn corrupt_policy_events_are_rejected() {
+            for bad in [
+                record("ReadGranted", serde_json::json!({"secret": SMTP})),
+                record(
+                    "ReadGranted",
+                    serde_json::json!({"secret": SMTP, "by": "hecate"}),
+                ),
+                record(
+                    "ReadGranted",
+                    serde_json::json!({"secret": format!("{SMTP}@3"), "by": "admin"}),
+                ),
+                record(
+                    "ReadGranted",
+                    serde_json::json!({"secret": "hades/smtp", "by": "admin"}),
+                ),
+                record(
+                    "ReadRevoked",
+                    serde_json::json!({"secret": SMTP, "by": "admin", "x": 1}),
+                ),
+                record("StatusGranted", serde_json::json!({"by": 1})),
+                record("StatusRevoked", serde_json::json!({})),
+                record("IdentityEnabled", serde_json::json!({})),
+            ] {
+                assert!(PolicyEvent::decode(&bad).is_err(), "{bad:?}");
+            }
         }
     }
 }

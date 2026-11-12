@@ -141,7 +141,8 @@ fn no_value_reaches_the_database_the_events_the_log_or_the_replies() {
         send("secrets.create", json!({"path": values[0], "value": 5}));
         send("status", json!({}));
     }
-    // The resolution has no channel yet: it is a use case, exercised directly.
+    // The resolution through its use case; the API that serves it has its own leak test,
+    // `identity_no_leak.rs`.
     let resolved = stack
         .service
         .resolve("hermes", &json!([PATH, "secret://hermes/certs/proxy"]))

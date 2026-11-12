@@ -1,7 +1,8 @@
 //! T033 and T046: the API after the creation of the CA (research R1, R8): no listener without a
 //! CA; once confirmed it presents the chain up to the root CA with Hécate's SPIFFE ID; sealed, TLS
-//! works and every route answers `unavailable`; without a valid certificate of its own it does not
-//! accept connections, and it listens again as soon as there is a new one.
+//! works and every route answers `unavailable` except `GET /v1/status`, which answers sealed
+//! (feature 006, `api_status.rs`); without a valid certificate of its own it does not accept
+//! connections, and it listens again as soon as there is a new one.
 
 mod common;
 
@@ -153,8 +154,7 @@ async fn api_request(addr: SocketAddr, method: &str, path: &str) -> (StatusCode,
 }
 
 fn sealed_check(rig: &CaRig) -> SealedCheck {
-    let sealing = rig.sealing.clone();
-    Arc::new(move || sealing.unsealed_epoch().is_err())
+    hecate_infrastructure::api::routes::sealed_check(rig.sealing.clone())
 }
 
 fn supervisor(rig: &CaRig) -> Arc<ApiSupervisor> {
@@ -177,6 +177,7 @@ fn handler(rig: &CaRig, supervisor: &Arc<ApiSupervisor>) -> Arc<RequestHandler> 
         IdentityOperations {
             ca: rig.service.clone(),
             identities: rig.identities.clone(),
+            policies: rig.policies.clone(),
             changed: Arc::new(move || {
                 runtime.block_on(supervisor.tick()).unwrap();
             }),

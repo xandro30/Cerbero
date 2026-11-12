@@ -10,10 +10,10 @@ use hecate_domain::events::{EventRecord, InvalidEvents};
 use hecate_domain::identity::names::RESERVED_IDENTITIES;
 use hecate_domain::instant::parse_iso;
 use hecate_domain::keys::key::{Key, KeyEvent};
-use hecate_domain::printable::is_printable;
 use hecate_domain::sealing::access_log::{AccessLogEntry, AccessResult, Method, Operation};
 use hecate_domain::sealing::errors::HecateError;
 use hecate_domain::secrets::path::{IDENTITY_RULE, SecretPath, SecretReference, parse_identity};
+use hecate_domain::secrets::rotation::{ROTATE_EVERY_RULE, RotationInterval};
 use hecate_domain::secrets::secret::{Secret, SecretEvent, SecretOptions, VersionState};
 use hecate_domain::secrets::value_type::ValueType;
 use hecate_domain::sensitive::SecretKey;
@@ -22,13 +22,14 @@ use time::OffsetDateTime;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::errors::ServiceError;
-use crate::ports::{AccessLog, Clock, CryptoProvider, SecretStore, SecretWrites};
+use crate::ports::{
+    AccessLog, Clock, CryptoProvider, KeyMaterial, SecretMaterial, SecretStore, SecretWrites,
+};
 use crate::sealing::service::SealingService;
 use crate::secrets::envelope::Envelope;
 use crate::secrets::settings::SecretsSettings;
 
 pub const ADMIN: &str = "admin";
-pub const MAX_ROTATE_EVERY: usize = 64;
 pub const MAX_REFERENCES: usize = 100;
 /// One message for every reason a reference cannot be resolved (FR-013, FR-014, SC-007).
 pub const NOT_RESOLVED: &str = "secret not found";
@@ -102,6 +103,8 @@ pub struct Added {
 /// ```
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct Resolved {
+    /// The reference as the request wrote it, with its `@N` if it had one.
+    pub reference: String,
     pub path: String,
     pub version: u64,
     pub value: Zeroizing<String>,
@@ -109,10 +112,37 @@ pub struct Resolved {
     pub cache_ttl_hard_s: u64,
 }
 
+/// Who resolves, as the rows of the resolution name it (data-model.md): the subject, and for a
+/// caller of the API the identity and the serial of the certificate it presented.
+#[derive(Debug, Clone, Copy)]
+pub struct CallContext<'a> {
+    pub subject: &'a str,
+    pub identity: Option<&'a str>,
+    pub certificate: Option<&'a str>,
+}
+
+/// A reference that passed the first phase of the resolution, with what its decryption needs.
+struct Checked {
+    reference: String,
+    path: String,
+    owner: String,
+    version: u64,
+    material: SecretMaterial,
+}
+
+/// A reference as the request wrote it: its parsing admits one spelling only.
+fn reference_text(reference: &SecretReference) -> String {
+    match reference.version {
+        Some(version) => format!("{}@{version}", reference.path),
+        None => reference.path.to_string(),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExpiryCounts {
     pub secrets_expired: u64,
     pub secrets_expiring_soon: u64,
+    pub secrets_due_rotation: u64,
 }
 
 /// The optional metadata of `create`, as the channel received it (`null` when absent).
@@ -186,17 +216,15 @@ fn instant_of(raw: &Value) -> Result<Option<OffsetDateTime>, ServiceError> {
     }
 }
 
+/// A duration in days or weeks (FR-023); it is kept as the text that was received.
 fn rotate_every_of(raw: &Value) -> Result<Option<String>, ServiceError> {
     match raw {
         Value::Null => Ok(None),
-        Value::String(text)
-            if (1..=MAX_ROTATE_EVERY).contains(&text.chars().count()) && is_printable(text) =>
-        {
+        Value::String(text) => {
+            RotationInterval::parse(text)?;
             Ok(Some(text.clone()))
         }
-        _ => Err(invalid(format!(
-            "rotate_every must be a text of 1 to {MAX_ROTATE_EVERY} characters"
-        ))),
+        _ => Err(invalid(ROTATE_EVERY_RULE)),
     }
 }
 
@@ -572,120 +600,203 @@ impl SecretsService {
         )
     }
 
-    /// Resolves secrets of `identity`: all or nothing, with one `not_found` for every refusal.
+    /// Resolves secrets of `identity` by the default rule, its own secrets: all or nothing, with
+    /// one `not_found` for every refusal and the identity as the subject of its rows.
     pub fn resolve(
         &self,
         identity: &str,
         references: &Value,
     ) -> Result<Vec<Resolved>, ServiceError> {
-        let mut subject = None;
-        let mut requested = None;
-        match self.resolve_all(identity, references, &mut subject, &mut requested) {
+        let identity = match parse_identity(identity) {
+            Ok(identity) => identity,
             Err(error) => {
-                let result = result_for(&error);
+                let error = ServiceError::from(error);
                 self.log(
                     Operation::SecretResolve,
-                    subject,
+                    None,
                     Method::Identity,
-                    result,
-                    requested,
+                    result_for(&error),
+                    None,
                     None,
                     "resolve",
                 )?;
-                Err(error)
+                return Err(error);
             }
+        };
+        let context = CallContext {
+            subject: identity,
+            identity: None,
+            certificate: None,
+        };
+        self.resolve_for(
+            &context,
+            &|path: &SecretPath| path.owner() == identity,
+            references,
+        )
+    }
+
+    /// Resolves secrets in two phases (research R2): every reference is checked, in the order
+    /// requested (permission, existence, resolvable version and stored material), before any is
+    /// decrypted, so a refusal opens no key. All or nothing, with one `not_found` for the three
+    /// refusals (FR-003), and the rows of the resolution with `context` (FR-015): one per secret,
+    /// or one with the first reference that fails.
+    pub fn resolve_for(
+        &self,
+        context: &CallContext<'_>,
+        permitted: &dyn Fn(&SecretPath) -> bool,
+        references: &Value,
+    ) -> Result<Vec<Resolved>, ServiceError> {
+        let mut requested = None;
+        let outcome = self.resolve_checked(permitted, references, &mut requested);
+        match &outcome {
+            Err(error) => self.log_resolution(context, result_for(error), requested, None)?,
             Ok(resolved) => {
-                for item in &resolved {
-                    self.log(
-                        Operation::SecretResolve,
-                        subject,
-                        Method::Identity,
+                for item in resolved {
+                    self.log_resolution(
+                        context,
                         AccessResult::Success,
                         Some(item.path.clone()),
                         Some(item.version),
-                        "resolve",
                     )?;
                 }
-                Ok(resolved)
             }
         }
+        outcome
     }
 
-    fn resolve_all<'a>(
+    fn resolve_checked(
         &self,
-        identity: &'a str,
+        permitted: &dyn Fn(&SecretPath) -> bool,
         references: &Value,
-        subject: &mut Option<&'a str>,
         requested: &mut Option<String>,
     ) -> Result<Vec<Resolved>, ServiceError> {
-        let identity = parse_identity(identity)?;
-        *subject = Some(identity);
-        let root = self.sealing.root()?;
+        // Sealed, the resolution is refused before anything else, as in feature 002.
+        self.sealing.unsealed_epoch()?;
         let references = parse_references(references)?;
         let now = self.now();
-        let mut scope_keys = HashMap::new();
-        let mut resolved = Vec::new();
+        let mut keys = HashMap::new();
+        let mut checked = Vec::with_capacity(references.len());
         for reference in &references {
             *requested = Some(reference.path.to_string());
-            resolved.push(self.resolve_one(&root, identity, reference, now, &mut scope_keys)?);
+            checked.push(self.check(permitted, reference, now, &mut keys)?);
         }
-        Ok(resolved)
+        *requested = None;
+        // Hécate may have been sealed since: then nothing is decrypted.
+        let root = self.sealing.root()?;
+        // Room for one scope key per reference, so the map never grows: growing would move the
+        // keys and leave their copies in the memory that it frees (FR-016).
+        let mut scope_keys = HashMap::with_capacity(checked.len());
+        checked
+            .iter()
+            .map(|item| self.open(&root, item, &keys, &mut scope_keys))
+            .collect()
     }
 
-    fn resolve_one(
+    /// The first phase for one reference: everything that makes it `not_found`, without
+    /// decrypting, with the wrapped scope key of its owner.
+    fn check(
         &self,
-        root: &SecretKey,
-        identity: &str,
+        permitted: &dyn Fn(&SecretPath) -> bool,
         reference: &SecretReference,
         now: OffsetDateTime,
-        scope_keys: &mut HashMap<u64, SecretKey>,
-    ) -> Result<Resolved, ServiceError> {
+        keys: &mut HashMap<(String, u64), KeyMaterial>,
+    ) -> Result<Checked, ServiceError> {
         let not_found = || ServiceError::from(HecateError::not_found(NOT_RESOLVED));
-        if reference.path.owner() != identity {
+        if !permitted(&reference.path) {
             return Err(not_found());
         }
         let secret = self.load_secret(&reference.path)?.ok_or_else(not_found)?;
-        let number = reference
+        let version = reference
             .version
             .or_else(|| secret.active_version())
             .filter(|number| secret.versions.contains_key(number))
             .ok_or_else(not_found)?;
-        let state = secret.state_of(number, now, self.settings.grace)?;
+        let state = secret.state_of(version, now, self.settings.grace)?;
         if !matches!(state, VersionState::Active | VersionState::Deprecated) {
             return Err(not_found());
         }
-        let text = reference.path.to_string();
+        let path = reference.path.to_string();
         let material = self
             .store
-            .load_secret_material(&text, number)?
+            .load_secret_material(&path, version)?
             .ok_or_else(not_found)?;
-        let scope_key = match scope_keys.entry(material.key_version) {
+        let owner = reference.path.owner().to_string();
+        if let Entry::Vacant(entry) = keys.entry((owner.clone(), material.key_version)) {
+            let wrapped = self
+                .store
+                .load_key_material(&owner, material.key_version)?
+                .ok_or_else(not_found)?;
+            entry.insert(wrapped);
+        }
+        Ok(Checked {
+            reference: reference_text(reference),
+            path,
+            owner,
+            version,
+            material,
+        })
+    }
+
+    /// The second phase for one reference: its value, opened with the scope key of its owner.
+    fn open(
+        &self,
+        root: &SecretKey,
+        item: &Checked,
+        keys: &HashMap<(String, u64), KeyMaterial>,
+        scope_keys: &mut HashMap<(String, u64), SecretKey>,
+    ) -> Result<Resolved, ServiceError> {
+        let scope_key = match scope_keys.entry((item.owner.clone(), item.material.key_version)) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
-                let wrapped = self
-                    .store
-                    .load_key_material(identity, material.key_version)?
-                    .ok_or_else(not_found)?;
+                let wrapped = keys
+                    .get(entry.key())
+                    .ok_or_else(|| ServiceError::internal("MissingKeyMaterial"))?;
                 entry.insert(self.envelope.open_scope_key(
                     root,
-                    identity,
-                    material.key_version,
-                    &wrapped,
+                    &item.owner,
+                    item.material.key_version,
+                    wrapped,
                 )?)
             }
         };
-        let opened = self
-            .envelope
-            .open_value(scope_key, &text, number, identity, &material)?;
+        let opened = self.envelope.open_value(
+            scope_key,
+            &item.path,
+            item.version,
+            &item.owner,
+            &item.material,
+        )?;
         let value = std::str::from_utf8(opened.expose())
             .map(|text| Zeroizing::new(text.to_string()))
             .map_err(|_| ServiceError::internal("UnicodeDecodeError"))?;
         Ok(Resolved {
-            path: text,
-            version: number,
+            reference: item.reference.clone(),
+            path: item.path.clone(),
+            version: item.version,
             value,
             cache_ttl_soft_s: self.settings.cache_ttl_soft_s,
             cache_ttl_hard_s: self.settings.cache_ttl_hard_s,
+        })
+    }
+
+    fn log_resolution(
+        &self,
+        context: &CallContext<'_>,
+        result: AccessResult,
+        path: Option<String>,
+        version: Option<u64>,
+    ) -> Result<(), ServiceError> {
+        self.access_log.append(&AccessLogEntry {
+            at: self.now(),
+            operation: Operation::SecretResolve,
+            method: Method::Identity,
+            result,
+            detail: "resolve".to_string(),
+            subject: Some(context.subject.to_string()),
+            path,
+            version,
+            identity: context.identity.map(str::to_string),
+            certificate: context.certificate.map(str::to_string),
         })
     }
 
@@ -883,17 +994,21 @@ impl SecretsService {
         )
     }
 
-    /// How many secrets have expired or expire soon: metadata only, so it works sealed too, and
-    /// it leaves no row in the access log.
+    /// How many secrets have expired, expire soon or must be rotated: metadata only, so it works
+    /// sealed too, and it leaves no row in the access log.
     pub fn expiry_counts(&self, now: Option<OffsetDateTime>) -> Result<ExpiryCounts, ServiceError> {
         let now = now.unwrap_or_else(|| self.now());
         let horizon = now + self.settings.expiring_soon;
         let mut counts = ExpiryCounts {
             secrets_expired: 0,
             secrets_expiring_soon: 0,
+            secrets_due_rotation: 0,
         };
         for stream in self.store.streams("secret/")? {
             let secret = self.secret_from_stream(&stream)?;
+            if secret.due_for_rotation(now) {
+                counts.secrets_due_rotation += 1;
+            }
             let Some(expires_at) = secret.expires_at else {
                 continue;
             };
