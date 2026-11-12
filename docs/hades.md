@@ -465,7 +465,7 @@ hades/
 | Hécate | Las integraciones usan la caché de secretos hasta 1 h; después, lo que necesita un secreto falla | Desbloquear Hécate |
 
 - **Salud y observabilidad:** OpenTelemetry (trazas hasta Hermes y el proveedor), métricas por Playbook y bloque, logs estructurados a stdout.
-- **Avisos por cronjobs de Hades:** consultan el estado de Hermes (`/capabilities`) y de Hécate (ámbito `status`) y emiten señales; Playbooks secundarios avisan al owner o al maintainer.
+- **Avisos por cronjobs de Hades:** consultan el estado de Hermes (`/capabilities`) y el de Hécate (`GET /v1/status`, con el permiso de estado) y emiten señales; Playbooks secundarios avisan al owner o al maintainer.
 - **Límites:** timeout técnico por bloque, profundidad máxima por `causation_id` en las cadenas de Playbooks, `max_iterations` en los bucles.
 
 ---

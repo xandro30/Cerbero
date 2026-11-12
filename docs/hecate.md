@@ -1,6 +1,6 @@
 # Hécate — secretos y claves
 
-*En la mitología, la guardiana de las llaves y las puertas del inframundo.* · Estado: diseñado · Última revisión: 2026-11-10
+*En la mitología, la guardiana de las llaves y las puertas del inframundo.* · Estado: diseñado · Última revisión: 2026-11-11
 
 Ver también: [ARCHITECTURE](../ARCHITECTURE.md) (visión transversal, en especial [Identidad y seguridad](../ARCHITECTURE.md#6-identidad-y-seguridad)) · [GLOSSARY](../GLOSSARY.md) · [DECISIONS](../DECISIONS.md)
 
@@ -33,16 +33,16 @@ flowchart LR
     Estigia -- "renovar identidad, firmar checkpoints" --> Hecate
     Caronte -- "renovar identidad" --> Hecate
     Tenaro[Ténaro] -- "gestión y desbloqueo (admin)" --> Hecate
-    Hades -. "estado (ámbito status) desde un cronjob" .-> Hecate
+    Hades -. "estado (permiso de estado) desde un cronjob" .-> Hecate
     Todos[Todos los componentes] -- "alta, lista de revocación y claves publicadas" --> Hecate
 ```
 
 | Con quién | Qué pide a Hécate |
 |---|---|
-| **Todos los componentes** | Darse de alta con un token y renovar su certificado; consultar la lista de revocación y las claves de firma de llamadas publicadas, siempre autenticados; resolver sus secretos; firmar los checkpoints de su auditoría |
-| **Hades** | Además, identidades hijas para sus integraciones y, desde un cronjob, el estado (ámbito `status`) |
+| **Todos los componentes** | Darse de alta con un token y renovar su certificado; consultar la lista de revocación y las claves de firma de llamadas publicadas, siempre autenticados; resolver sus secretos y los que el admin les comparte; firmar los checkpoints de su auditoría |
+| **Hades** | Además, identidades hijas para sus integraciones y, desde un cronjob, el estado (con el permiso de estado) |
 | **Hermes** | Además, `wrap` / `unwrap` para cifrar sus copias de seguridad |
-| **Ténaro** | Gestión (secretos, permisos, identidades, rotaciones) y desbloqueo, siempre con el admin autenticado |
+| **Ténaro** | Gestión (secretos, Access Policy, identidades, rotaciones) y desbloqueo, siempre con el admin autenticado |
 
 ---
 
@@ -56,11 +56,11 @@ flowchart LR
 | **Key** | Una clave propia: de cifrado por ámbito, la CA con sus intermedias o de firma de eventos | Por versión: `active`, `decrypt_only` / `verify_only`, `retired` |
 | **Certificate** | Un certificado emitido a una identidad: su emisión, su única renovación y su revocación | `valid`, `revoked`, `expired` |
 | **Identity** | Un componente o una identidad hija (`spiffe://cerbero.home/...`), con sus tokens de alta | Sin alta (solo tokens), `enrolled`, `disabled` |
-| **Access Policy** | Qué rutas y operaciones puede usar una identidad | Versionada |
+| **Access Policy** | Lo que una identidad puede usar además de sus propios secretos: las excepciones del admin, cada una para leer un secreto concreto de otra identidad, y el permiso de estado | Versionada: cada cambio, con quién y cuándo |
 
 - Todos son event-sourced y **ningún evento lleva un valor**: solo metadatos, versiones y quién.
 - Los accesos (resoluciones, renovaciones, `wrap` / `unwrap`, rechazos, intentos de desbloqueo) van a un **registro de accesos** aparte, append-only, para que los secretos no crezcan con cada lectura.
-- Las escrituras de secretos llevan la versión esperada (como el *check-and-set* de OpenBao), para que dos cambios simultáneos no se pisen. Las órdenes del admin sobre identidades, certificados y tokens no la llevan: su resultado no depende de lo que leyó antes, y repetir una que no cambia nada no escribe eventos.
+- Las escrituras de secretos llevan la versión esperada (como el *check-and-set* de OpenBao), para que dos cambios simultáneos no se pisen. Las órdenes del admin sobre identidades, certificados, tokens y políticas no la llevan: su resultado no depende de lo que leyó antes, y repetir una que no cambia nada no escribe eventos.
 - **El admin escribe valores pero nunca los lee.** Para comprobar lo que escribió ve la **huella** de cada versión (ver más abajo); el valor solo sale por la resolución, que es de las identidades.
 
 ### Jerarquía de claves (cifrado por sobre)
@@ -99,7 +99,7 @@ La ruta, la versión y el ámbito van como **datos asociados** del AEAD: si algu
 
 | Tabla (SQLite) | Contenido | Se borra |
 |---|---|---|
-| `events` | Los eventos de los aggregates `Secret` (stream `secret/<identidad>/<resto>`), `Key` (streams `key/<identidad>` y `ca`), `Identity` (stream `identity/<nombre>`) y `Certificate` (stream `certificate/<identidad>/<serie>`): solo metadatos, fechas y huellas. Append-only (triggers que rechazan `UPDATE` y `DELETE`) y con la versión esperada del stream en cada escritura | Nunca |
+| `events` | Los eventos de los aggregates `Secret` (stream `secret/<identidad>/<resto>`), `Key` (streams `key/<identidad>` y `ca`), `Identity` (stream `identity/<nombre>`), `Certificate` (stream `certificate/<identidad>/<serie>`) y `Access Policy` (stream `policy/<identidad>`): solo metadatos, fechas y huellas. Append-only (triggers que rechazan `UPDATE` y `DELETE`) y con la versión esperada del stream en cada escritura | Nunca |
 | `secret_material` | Por versión: el valor cifrado con su DEK y la DEK envuelta por la clave de ámbito | Al destruir la versión |
 | `key_material` | Por identidad y versión: la clave de ámbito envuelta por la raíz | Nunca |
 | `ca_material` | Por generación y versión de intermedia: los certificados de la CA raíz y de la intermedia, y la clave de la intermedia envuelta por la raíz | Al retirar la intermedia |
@@ -124,7 +124,7 @@ stateDiagram-v2
     unsealed --> sealed: sellar a mano o reiniciar
 ```
 
-- **Sellada** solo admite desbloquear y consultar el estado. La API sigue escuchando con el certificado vigente de Hécate y responde `unavailable` a los componentes, sin emitir, renovar ni publicar nada; si ese certificado caduca, deja de escuchar hasta que se desbloquea y se renueva ([riesgo aceptado](../DECISIONS.md#riesgos-aceptados)). Al reiniciar, vuelve a `sealed`. El admin puede sellarla a mano con una sola acción (p. ej. ante una intrusión).
+- **Sellada** solo admite desbloquear y consultar el estado. La API sigue escuchando con el certificado vigente de Hécate y responde `unavailable` a los componentes, sin emitir, renovar, publicar ni resolver nada, salvo el estado agregado para las identidades con el permiso de estado; si ese certificado caduca, deja de escuchar hasta que se desbloquea y se renueva ([riesgo aceptado](../DECISIONS.md#riesgos-aceptados)). Al reiniciar, vuelve a `sealed`. El admin puede sellarla a mano con una sola acción (p. ej. ante una intrusión).
 - **La raíz es aleatoria y se guarda cifrada dos veces:** con una clave derivada de la frase del admin (para el día a día) y con una clave de recuperación aleatoria que se reparte en tres partes de Shamir, de las que bastan dos (para recuperarla si se olvida la frase). Cambiar la frase o repartir de nuevo las partes solo sustituye una de las dos protecciones; la raíz y los secretos no se tocan, y ambas operaciones exigen demostrarlo de nuevo con la frase actual o con dos partes.
 - **Se desbloquea desde Ténaro** (passkey del admin + frase, por mTLS) **o con una CLI local** en el equipo de Hécate.
 - **Canal local de administración:** la CLI `hecate` habla con el proceso por un socket Unix (permisos `0600` en un directorio `0700`, solo el mismo usuario). Usa el sobre y los códigos de error comunes, con `conflict` para "operación no permitida en el estado actual"; no publica API Contracts ni `/capabilities`, porque no cruza componentes (constitución, principio II). La salud de Hécate se consulta por este canal (`hecate status`); la API no tiene `/health`.
@@ -138,7 +138,7 @@ stateDiagram-v2
   | `secrets.revoke` · `restore` · `promote` | `hecate secrets revoke\|restore\|promote <ruta> --version <n>` | Sin prueba; llevan `expected_version` |
   | `secrets.destroy` | `hecate secrets destroy <ruta> --version <n> [--with-shares]` | Exige la prueba (frase actual o dos partes) y cuenta en el contador común |
 
-  El valor se pide sin eco o se lee de un fichero, nunca de la línea de órdenes. `hecate status` añade los recuentos de secretos caducados y por caducar en 7 días, que se calculan con los metadatos y también responden sellada.
+  El valor se pide sin eco o se lee de un fichero, nunca de la línea de órdenes. `hecate status` añade los recuentos de secretos caducados, por caducar en 7 días y por rotar, que se calculan con los metadatos y también responden sellada.
 - **Operaciones de la CA y de las identidades en el canal local** (todas exigen Hécate desbloqueada y dejan una fila con `subject: admin`, la identidad y, si la hay, la serie; contrato en [specs/003-hecate-identities/contracts](../specs/003-hecate-identities/contracts/control-protocol.md)):
 
   | Operación | CLI | Notas |
@@ -152,24 +152,45 @@ stateDiagram-v2
   | `certificates.revoke` | `hecate certificates revoke <serie> [--urgent]` | El certificado de Hécate solo admite `--urgent` y se reemite al momento |
 
   La clave de la CA raíz nunca entra en el proceso de Hécate: solo existe en la memoria de la CLI durante cada ceremonia y en la copia que el admin guarda en dos soportes. La frase de la CA solo llega a Hécate al crear o sustituir la CA, para comprobar que no es la de desbloqueo. `hecate status` añade el bloque de la CA, también sellada: la serie y la caducidad del certificado de Hécate, los días que le quedan a la intermedia si son menos de 30, cuántas identidades caducan en 24 horas, los intentos de renovación sospechosos y si las altas están frenadas.
+- **Operaciones de la Access Policy en el canal local** (todas exigen Hécate desbloqueada y dejan una fila con `subject: admin` y la identidad de la política, también si no cambian nada; contrato en [specs/006-hecate-access-policy/contracts](../specs/006-hecate-access-policy/contracts/control-protocol.md)):
+
+  | Operación | CLI | Notas |
+  |---|---|---|
+  | `policies.grant_read` · `revoke_read` | `hecate policies grant-read\|revoke-read <identidad> <ruta>` | Una excepción para leer un secreto concreto de otra identidad, sin `@N` ni comodines; concederla exige que el secreto exista |
+  | `policies.grant_status` · `revoke_status` | `hecate policies grant-status\|revoke-status <identidad>` | El permiso de estado |
+  | `policies.list` · `get` | `hecate policies list` · `get <identidad>` | Las identidades con algún cambio de política; la política vigente con su historial |
+
+  Las órdenes no llevan versión esperada, y una que no cambia nada no escribe eventos. Se pueden conceder a una identidad que aún no se ha dado de alta, pero nunca a `hecate` ni a `admin`, ni para los secretos de la propia identidad, que ya lee por la regla por defecto.
 - **Inicialización, una sola vez:** se genera la raíz, el admin fija la frase (mínimo 12 caracteres) y se generan las tres partes de Shamir, que se muestran una vez y se confirman con dos de ellas; hasta confirmar no se guarda nada. La CA se crea después, en su propia ceremonia (`hecate ca create`). Una vez inicializada, no hay operación para borrarlo todo: volver a empezar es un procedimiento manual (parar Hécate y borrar sus datos).
 - La raíz solo vive en memoria, sin swap ni volcados de memoria. Cada intento de inicializar, desbloquear, sellar o cambiar la protección queda en el registro de accesos. Tras tres fallos seguidos, la espera es de 1, 2, 4 y 8 minutos y después de 15; el contador sobrevive a los reinicios y es común a la frase, las partes y las pruebas para cambiar la protección.
 
 ### Resolver un secreto
 
-La resolución (`resolve(identidad, referencias)`) es hoy un caso de uso interno sin canal: el canal local es del admin, que no lee valores, y su canal autenticado por identidad depende de la Access Policy, [abierta](../DECISIONS.md#abiertas). Sus reglas ya están en el caso de uso: todo o nada, tiempos de caché 300 s y 3600 s, y un único `not_found` con el mismo mensaje tanto si el secreto no existe, como si es de otra identidad o no tiene versión `active`.
+Los secretos los resuelven las identidades por la API, con `POST /v1/secrets:resolve` y el certificado de la conexión y un token corto, como el resto de la API. El canal local es del admin, que no lee valores.
 
 ```mermaid
 sequenceDiagram
     participant C as Componente (p. ej. Hermes)
     participant K as Hécate
-    C->>K: POST /secrets:resolve [secret://hermes/telegram/family_bot/bot_token] (mTLS + JWT)
-    K->>K: ¿desbloqueada? ¿la identidad puede leer esa ruta?
-    K->>K: desenvolver la DEK con la clave de ámbito y descifrar (AEAD)
+    C->>K: POST /v1/secrets:resolve [secret://hermes/telegram/family_bot/bot_token] (mTLS + token corto)
+    K->>K: ¿desbloqueada? ¿certificado y token válidos?
+    K->>K: cada referencia: ¿la puede leer según su Access Policy? ¿existe y tiene una versión resoluble?
+    K->>K: desenvolver las DEK con la clave de ámbito del dueño y descifrar (AEAD)
     K->>K: registrar el acceso (sin el valor)
     K-->>C: valor, versión y TTL de caché
     C->>C: guardar en memoria (TTL blando 5 min, duro 1 h)
 ```
+
+- **Varias referencias a la vez**, hasta 100, todo o nada: la versión activa o una concreta (`@N`), cada una con su valor, su versión y los tiempos de caché, 300 s y 3600 s.
+- **Qué puede leer:** sus propios secretos y los que una excepción de su Access Policy le comparte. La política se lee una vez por petición, así que retirar una excepción vale desde la petición siguiente.
+- **Un único rechazo:** un secreto que no existe, uno de otra identidad sin excepción y uno sin versión resoluble dan el mismo `not_found`, con el mismo mensaje y nunca antes de 250 ms desde que la petición llega a la operación. Hécate comprueba todas las referencias antes de descifrar ninguna, así que un rechazo no abre ninguna clave.
+- **Un secreto compartido** se descifra con la clave de ámbito de su dueño y sigue sus reglas de versiones y caducidad.
+- **Filas:** una por referencia si se atiende y una con la primera que falla si se rechaza, con el SPIFFE ID, la identidad y la serie del certificado; nunca el valor ni la huella.
+- **Memoria:** el valor viaja en búferes que se borran al enviar la respuesta, también si falla.
+
+### Consultar el estado
+
+Una identidad con el permiso de estado consulta `GET /v1/status`, también con Hécate sellada: si está sellada y los recuentos del `status` del admin, sin el bloque de la CA (secretos caducados, por caducar en 7 días y por rotar; identidades que caducan en 24 horas; intentos de renovación sospechosos; días que le quedan a la intermedia si son menos de 30; y si las altas están frenadas). Nunca rutas, nombres ni metadatos de un secreto concreto. Una consulta atendida no deja fila; un rechazo, sí.
 
 ### Alta y renovación de una identidad
 
@@ -224,7 +245,7 @@ stateDiagram-v2
 - **Volver a la anterior** (p. ej. si las credenciales nuevas no funcionan): el admin la promueve otra vez a `active`, como evento.
 - **`destroy` es borrado criptográfico:** se borra la DEK de esa versión; los eventos siguen y el dato ya no se puede descifrar. Solo se destruye una versión `revoked` y el admin lo demuestra de nuevo con la frase actual o dos partes (el mismo contador de intentos que el desbloqueo); revocar, restaurar y promover no piden prueba, y la destrucción por `max_versions` tampoco.
 - **Rotación de un secreto de terceros:** el admin rota en el proveedor y añade la versión nueva desde Ténaro; los componentes la recogen al refrescar su caché. Después, la prueba de conexión de la instancia (en Hermes) lo confirma.
-- **Avisos de rotación:** `rotate_every` y `expires_at` en los metadatos; un cronjob de Hades consulta el estado y un Playbook secundario avisa al admin.
+- **Avisos de rotación:** `rotate_every` y `expires_at` en los metadatos; el estado cuenta los secretos por rotar y por caducar, un cronjob de Hades lo consulta y un Playbook secundario avisa al admin.
 - **En una fuga:** se revoca sin periodo de gracia y se rota en el proveedor.
 
 ### Auditoría y checkpoints
@@ -255,15 +276,15 @@ sequenceDiagram
 | | `GET /v1/revocations` | La lista de revocación: una CRL por intermedia, válida 5 minutos |
 | | `GET /v1/keys` · `GET /v1/keys/{kid}` | Las claves de firma de llamadas que valen para llamadas nuevas, válidas 5 minutos; o una concreta, también antigua |
 | | `GET /v1/capabilities` | Las operaciones de esta versión de la API |
-| | `POST /v1/secrets:resolve` | Resuelve varias referencias a la vez; devuelve valor, versión y TTL de caché |
+| | `POST /v1/secrets:resolve` | Resuelve hasta 100 referencias a la vez, todo o nada, con la Access Policy de quien llama; devuelve valor, versión y TTL de caché |
 | | `POST /v1/keys/{id}:wrap` · `:unwrap` | Envuelve o desenvuelve la DEK de otro componente con la clave de su ámbito |
 | | `POST /v1/checkpoints:sign` | Firma los últimos hashes de los streams de un componente |
-| **Estado** (ámbito `status`) | Consulta | Sellada o no, recuentos y avisos agregados (secretos por rotar o caducar, certificados por caducar) y resultado de la verificación de la auditoría. Nunca rutas ni metadatos de un secreto concreto |
-| **Gestión** (admin) | Canal local y Ténaro | Secretos y versiones, revocar, restaurar, destruir, permisos, la CA, tokens de alta, identidades, revocar certificados, rotar claves, sellar |
+| **Estado** (permiso de estado) | `GET /v1/status` | Sellada o no y los recuentos agregados: secretos caducados, por caducar en 7 días y por rotar, identidades que caducan en 24 horas, intentos de renovación sospechosos, días que le quedan a la intermedia si son menos de 30 y si las altas están frenadas. Responde también sellada. Nunca rutas, nombres ni metadatos de un secreto concreto |
+| **Gestión** (admin) | Canal local y Ténaro | Secretos y versiones, revocar, restaurar, destruir, la Access Policy, la CA, tokens de alta, identidades, revocar certificados, rotar claves, sellar |
 | **Desbloqueo** | Desbloquear, consultar el estado | Lo único disponible mientras está sellada |
 
-- Mismo contrato común que el resto de componentes (sobre, errores, versión en la ruta), con el OpenAPI en `shared/contracts/src/cerbero_contracts/openapi/hecate.v1.json`. La API habla solo TLS 1.3: el alta se autentica con el token y lo demás con el certificado de cliente y un token corto ligado a él. Sellada, todo responde `unavailable`.
-- **Referencias a secretos:** `secret://<ruta>` resuelve la versión activa; `secret://<ruta>@7`, una concreta.
+- Mismo contrato común que el resto de componentes (sobre, errores, versión en la ruta), con el OpenAPI en `shared/contracts/src/cerbero_contracts/openapi/hecate.v1.json`. La API habla solo TLS 1.3: el alta se autentica con el token y lo demás con el certificado de cliente y un token corto ligado a él. Sellada, todo responde `unavailable` salvo `GET /v1/status`.
+- **Referencias a secretos:** `secret://<ruta>` resuelve la versión activa; `secret://<ruta>@7`, una concreta (de 1 a 9 cifras, sin ceros a la izquierda).
 - **Los Playbooks no tienen destino `hecate`:** los secretos nunca entran en los datos de una Response.
 
 ---
@@ -271,7 +292,7 @@ sequenceDiagram
 ## 6. Configuración y extensión
 
 - **Permisos que salen de las declaraciones:** al registrar una instancia de Hermes o una integración de Hades, sus referencias `secret://` dan permiso de lectura a su identidad. Una referencia fuera de su ámbito se rechaza. El valor lo introduce el admin aparte.
-- **Metadatos de cada secreto:** owner, tipo del valor (`string`, `json`, `pem`...), validado al escribir; `max_versions`; `rotate_every`; `expires_at`.
+- **Metadatos de cada secreto:** owner, tipo del valor (`string`, `json`, `pem`...), validado al escribir; `max_versions`; `rotate_every`, una duración ISO 8601 en días o en semanas (`P90D`, de 1 a 3650 días, o `P12W`, de 1 a 520 semanas): el secreto debe rotarse cuando su versión activa la cumple; `expires_at`.
 - **Parámetros configurables:** perfil de Argon2id (`sensitive` por defecto o `moderate`, nunca uno más débil), periodo de gracia, rotación de las claves de ámbito, TTL de caché, duración de los certificados, retención de la auditoría.
 - **Hardware:** un adapter del `CryptoProvider` (TPM o YubiKey) para desbloqueo automático y claves que no salen del dispositivo.
 
@@ -332,9 +353,10 @@ hecate/
 ## 9. Seguridad
 
 - **Nunca expuesta a internet;** API interna solo con TLS 1.3. Los componentes se autentican con su certificado y un token corto (Ed25519, 5 minutos como mucho, un solo uso) firmado con su clave de firma de llamadas; el alta, con un token de un solo uso cuya huella les deja comprobar a Hécate antes de enviar nada. Hécate valida la cadena en la aplicación, así que todo rechazo responde `auth` y deja fila.
-- **Políticas:** cada identidad solo lee `secret://<su identidad>/**`; lo demás está denegado. Una identidad padre no lee los secretos de sus hijas. Compartir un secreto es una excepción explícita y auditada.
-- **Quién hace qué:** los componentes solo se dan de alta, renuevan y leen lo publicado o sus secretos; la gestión y el desbloqueo, solo el admin, por la CLI local o desde Ténaro.
-- **Material de la CA:** la clave de la CA raíz nunca entra en Hécate; la de cada intermedia se guarda envuelta por la raíz y solo se descifra para la operación que firma. La frase de la CA, las claves y los tokens de paso se borran de la memoria al terminar cada operación.
+- **Access Policy:** por defecto, cada identidad solo lee `secret://<su identidad>/**`; lo demás está denegado. Una identidad padre no lee los secretos de sus hijas. Compartir un secreto es una excepción explícita del admin para un secreto concreto, sin comodines ni prefijos, que vale hasta que la retira. El permiso de estado solo deja ver recuentos agregados.
+- **Un rechazo no delata nada:** un secreto que no existe, uno ajeno y uno sin versión resoluble dan el mismo `not_found`, ni por su contenido ni por su tiempo, y la resolución lo comprueba todo antes de descifrar.
+- **Quién hace qué:** los componentes solo se dan de alta, renuevan, leen lo publicado, resuelven sus secretos y los que les comparten y, con el permiso de estado, consultan el estado; la gestión y el desbloqueo, solo el admin, por la CLI local o desde Ténaro.
+- **Material de la CA:** la clave de la CA raíz nunca entra en Hécate; la de cada intermedia se guarda envuelta por la raíz y solo se descifra para la operación que firma. La frase de la CA, las claves y los tokens de paso se borran de la memoria al terminar cada operación, y los valores resueltos, al enviar la respuesta.
 - **Cada cambio de política** se versiona y se registra con quién; los rechazos van al registro de accesos.
 - **Proceso** con usuario propio, sin swap ni volcados de memoria.
 
@@ -344,7 +366,7 @@ hecate/
 
 | Qué pasa | Efecto | Recuperación |
 |---|---|---|
-| Hécate caída o sellada | Los componentes siguen con la caché hasta 1 h; después, lo que necesita un secreto falla con `internal`. Las identidades aguantan hasta 3 días; sellada, la API responde `unavailable` | Arrancar y desbloquear (Ténaro o CLI) |
+| Hécate caída o sellada | Los componentes siguen con la caché hasta 1 h; después, lo que necesita un secreto falla con `internal`. Las identidades aguantan hasta 3 días; sellada, la API responde `unavailable`, salvo el estado agregado | Arrancar y desbloquear (Ténaro o CLI) |
 | Se pierde el disco | Igual que caída | Restaurar la copia y desbloquear con la frase o las partes |
 | Se olvida la frase | Nada, mientras siga desbloqueada | Desbloquear con 2 de 3 partes y fijar una frase nueva |
 | Se pierden la frase y las partes | Los datos no se pueden descifrar, ni desde las copias | Inicializar de nuevo, dar de alta otra vez las identidades y volver a introducir los secretos |
@@ -358,7 +380,7 @@ hecate/
 - **Una sola instancia**, sin alta disponibilidad: la caché y los certificados de 3 días cubren las caídas cortas.
 - **Tras un corte de luz de toda la casa**, Hécate queda sellada y no hay avisos hasta desbloquearla (los avisos dependen de secretos que custodia); Ténaro muestra el estado.
 - **Observabilidad** con OpenTelemetry: resoluciones, rechazos, desbloqueos, caducidades, rotaciones pendientes y progreso de las rotaciones de claves; logs sin valores.
-- **Avisos:** un cronjob de Hades consulta el ámbito `status` y emite señales (sellada, certificados por caducar, rotaciones pendientes, integridad de la auditoría).
+- **Avisos:** un cronjob de Hades consulta el estado con el permiso de estado, también sellada, y emite señales (sellada, secretos por rotar o caducar, certificados por caducar, renovaciones sospechosas, altas frenadas). La integridad de la auditoría la vigila su verificación periódica.
 
 ---
 
@@ -375,7 +397,7 @@ hecate/
 
 Resumen; el detalle y el porqué están en [DECISIONS](../DECISIONS.md#hécate-frente-a-sus-referencias-openbao--vault-step-ca-spiffe).
 
-- **Frente a sus referencias:** se construye en Cerbero sin inventar criptografía; frase del admin más Shamir de recuperación; certificados de 3 días; identidad SPIFFE sin SPIRE; JWT ligado al canal mTLS; Hécate firma los checkpoints de todo Cerbero; renovación única con detección de reutilización; claves de firma de llamadas solo para componentes autenticados; sustituir la CA en lugar de revocar la intermedia; alta sin certificado de cliente.
+- **Frente a sus referencias:** se construye en Cerbero sin inventar criptografía; frase del admin más Shamir de recuperación; certificados de 3 días; identidad SPIFFE sin SPIRE; JWT ligado al canal mTLS; Hécate firma los checkpoints de todo Cerbero; renovación única con detección de reutilización; claves de firma de llamadas solo para componentes autenticados; sustituir la CA en lugar de revocar la intermedia; alta sin certificado de cliente; excepciones de acceso por secreto concreto, sin comodines ni políticas ligadas a tokens.
 - **Descartado:** IdP con OIDC, OAuth *client credentials*, claves API compartidas, OpenBao / SOPS + age / variables de entorno como almacén, inventar criptografía.
 - **Riesgos aceptados:** Hécate firma sus propios checkpoints (solo lo cubre un anclaje externo); tras un corte de luz no hay avisos hasta desbloquearla; la raíz está en memoria mientras Hécate está desbloqueada (los secretos de paso se borran al terminar cada operación); ninguna implementación de Shamir tiene una auditoría pública; la clave propia de Hécate se guarda en claro para responder sellada con su certificado vigente.
 
@@ -399,7 +421,10 @@ Para aprender cómo funciona por dentro. Se toma su modelo como referencia (sell
 Rotándolo en el proveedor, añadiendo la versión nueva desde Ténaro y lanzando la prueba de conexión de la instancia. Si falla, se vuelve a la versión anterior.
 
 **¿Qué ve Hades del estado de Hécate?**
-Solo recuentos y avisos agregados por su ámbito `status`, nunca la lista de secretos.
+Solo los recuentos agregados de `GET /v1/status`, con el permiso de estado que le concede el admin; nunca rutas ni nombres.
+
+**¿Cómo comparto un secreto entre dos componentes?**
+Con una excepción: `hecate policies grant-read <identidad> <ruta>` deja a esa identidad resolver ese secreto concreto, y `revoke-read` se lo retira desde la petición siguiente. Cada cambio queda en el historial de su política, con quién lo hizo.
 
 **¿Qué pasa si alguien manipula la auditoría de un componente?**
 Se rompe la cadena de hashes o la firma del checkpoint, y la verificación periódica lo detecta.

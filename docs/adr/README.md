@@ -13,6 +13,7 @@ Una decisión significativa por fichero (`NNNN-titulo.md`). Las decisiones abier
 | [0007](0007-pila-hecate-rust.md) | Pila de Hécate en Rust | Aceptada |
 | [0008](0008-excepcion-openssl-agpl.md) | Permiso adicional de enlace con OpenSSL en la AGPL | Aceptada |
 | [0009](0009-pila-api-hecate.md) | Pila de la API mTLS de Hécate | Aceptada |
+| [0010](0010-access-policy-hecate.md) | Access Policy de Hécate | Aceptada |
 
 ## Plantilla
 

@@ -197,7 +197,7 @@ Detalle completo en [docs/hecate.md](docs/hecate.md).
 - **Modelo:** cinco aggregates event-sourced (Secret, Key, Certificate, Identity, Access Policy) y un registro de accesos aparte; ningún evento lleva un valor.
 - **Cifrado por sobre:** raíz solo en memoria → claves de ámbito (una por identidad) → DEK por versión de secreto, con AES-256-GCM y la ruta, la versión y el ámbito como datos asociados.
 - **Arranque:** sellada al reiniciar; se desbloquea con la frase del admin o, para recuperar, con 2 de 3 partes de Shamir.
-- **Acceso:** cada identidad solo lee `secret://<su identidad>/**`, con permisos derivados de lo que declaran instancias e integraciones. Los Playbooks nunca manejan secretos.
+- **Acceso:** cada identidad lee `secret://<su identidad>/**`, con permisos derivados de lo que declaran instancias e integraciones, y los secretos concretos de otras que el admin le comparte con una excepción de su Access Policy. Los Playbooks nunca manejan secretos.
 - **Frontera:** solo red interna; nunca llama a nadie.
 
 ---

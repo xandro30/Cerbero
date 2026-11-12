@@ -100,6 +100,7 @@ No hay más desviaciones de lenguaje. Se descartaron `by <d>` (tumbling: se cubr
 | Las claves de firma de llamadas solo se publican a componentes autenticados, sin un JWKS público | Nada fuera de Cerbero necesita verificar sus llamadas, y así la lista no revela qué componentes existen. |
 | Ante una intermedia comprometida o la pérdida de la clave de la CA raíz, se sustituye la CA entera en lugar de revocar la intermedia | Revocar la intermedia exigiría la clave raíz, que puede ser justo lo perdido, y una CRL de la raíz que todos consulten; con certificados de 3 días, volver a dar de alta los componentes es asumible. |
 | El alta se autentica con el token, sin certificado de cliente (SPIFFE atestigua el nodo y la carga) | En casa no hay plataforma que atestiguar; el token de un solo uso con la huella de la CA raíz deja al componente comprobar a Hécate antes de enviar nada. |
+| Compartir un secreto es una excepción que nombra un secreto concreto, sin comodines ni prefijos, en la política de la identidad y no ligada a tokens (OpenBao / Vault: políticas con rutas y comodines asociadas a tokens) | Hay pocos secretos compartidos y una lista explícita se revisa de un vistazo y no abre más de lo que nombra. Quien llama ya se identifica con su certificado y su token corto, y Hécate decide con la política de esa identidad ([ADR 0010](docs/adr/0010-access-policy-hecate.md)). |
 
 ### Descartado en Hécate y en la identidad
 
@@ -137,6 +138,7 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 | Pila de Hécate en Rust: aws-lc-rs, libsodium para Argon2id, vsss-rs, tokio y rusqlite | [0007](docs/adr/0007-pila-hecate-rust.md) |
 | Permiso adicional de enlace con OpenSSL y sus derivadas en la AGPL | [0008](docs/adr/0008-excepcion-openssl-agpl.md) |
 | API mTLS de Hécate: axum, rustls, rcgen, jsonwebtoken, CRL X.509 y OpenAPI en JSON | [0009](docs/adr/0009-pila-api-hecate.md) |
+| Access Policy de Hécate: regla por defecto, excepciones por secreto concreto, permiso de estado y rechazos que no se distinguen | [0010](docs/adr/0010-access-policy-hecate.md) |
 
 ---
 
@@ -189,7 +191,6 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 | `chat.ask` | Clasificación (consulta con `side_effect`) y comportamiento con cada proveedor, a ajustar al implementar; texto libre más adelante. |
 | Permisos por rol | Hoy hay un único rol privilegiado, el admin (Hécate, identidades, invitaciones); owner y maintainer salen de las definiciones. Falta la capa de permisos para el resto. |
 | `signal` en otros destinos | Solo `hades.signal` tiene uso; en los demás, cuando su contrato publique señales. |
-| Access Policy de Hécate y resolución por el canal autenticado | La resolución de secretos es un caso de uso interno; falta su canal por identidad y la Access Policy que decide qué rutas y operaciones usa cada una. |
 | Adapter de hardware de Hécate | TPM o YubiKey detrás del `CryptoProvider`: desbloqueo automático y claves que no salen del dispositivo. |
 | Rotación automática de secretos | Que la librería del proveedor cree credenciales nuevas por API cuando el proveedor lo permita. |
 | Anclaje externo de los checkpoints | Una copia de los checkpoints firmados fuera de Cerbero, para detectar también una reescritura de Hécate. |

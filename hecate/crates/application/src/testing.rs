@@ -622,11 +622,17 @@ pub struct InMemoryIdentityStore {
     data: Mutex<IdentityData>,
     failing: Mutex<bool>,
     attempts: Mutex<usize>,
+    loads: Mutex<HashMap<String, usize>>,
 }
 
 impl InMemoryIdentityStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// How many times a stream was read outside a transaction.
+    pub fn loads_of(&self, stream: &str) -> usize {
+        lock(&self.loads).get(stream).copied().unwrap_or(0)
     }
 
     /// Makes the next transactions fail after their work, as a power cut before the commit
@@ -664,6 +670,7 @@ impl InMemoryIdentityStore {
 
 impl EventStore for InMemoryIdentityStore {
     fn load(&self, stream: &str) -> Result<Vec<EventRecord>, ServiceError> {
+        *lock(&self.loads).entry(stream.to_string()).or_default() += 1;
         Ok(lock(&self.data)
             .events
             .get(stream)
@@ -726,15 +733,20 @@ impl EnrollAttemptsRepository for InMemoryEnrollAttempts {
     }
 }
 
+use crate::access_policy::service::AccessPolicyService;
 use crate::ca::service::CaService;
 use crate::ca::settings::CaSettings;
 use crate::identity::service::IdentityService;
 use crate::identity::settings::IdentitySettings;
 use crate::ports::{CallTokenVerifier, PkiProvider};
 
-/// An initialized and unsealed Hécate with the services of the CA and of the identities over the
-/// in-memory doubles; the PKI and the verifier of short call tokens are the caller's, since the
-/// real ones live in the infrastructure.
+/// What wraps the store of the secrets of a [`CaRig`], given Hécate's sealing.
+pub type SecretStoreWrap<'a> =
+    dyn FnOnce(Arc<InMemorySecretStore>, Arc<SealingService>) -> Arc<dyn SecretStore> + 'a;
+
+/// An initialized and unsealed Hécate with the services of the CA, the identities, the secrets
+/// and the Access Policy over the in-memory doubles; the PKI and the verifier of short call tokens
+/// are the caller's, since the real ones live in the infrastructure.
 pub struct CaRig {
     pub crypto: Arc<dyn CryptoProvider>,
     pub pki: Arc<dyn PkiProvider>,
@@ -746,9 +758,14 @@ pub struct CaRig {
     pub attempts: Arc<InMemoryEnrollAttempts>,
     pub service: Arc<CaService>,
     pub identities: Arc<IdentityService>,
+    pub policies: Arc<AccessPolicyService>,
+    pub secrets_store: Arc<InMemorySecretStore>,
+    pub secrets: Arc<SecretsService>,
     /// The three recovery shares of the initialization.
     pub shares: Vec<String>,
     verifier: Arc<dyn CallTokenVerifier>,
+    /// The store that the secrets service uses: `secrets_store` or a wrapper of it.
+    secret_store: Arc<dyn SecretStore>,
     ca_settings: CaSettings,
     settings: IdentitySettings,
 }
@@ -775,6 +792,38 @@ impl CaRig {
         ca_settings: CaSettings,
         settings: IdentitySettings,
     ) -> Self {
+        Self::built(
+            (crypto, pki, verifier),
+            (ca_settings, settings),
+            Box::new(|store, _| store),
+        )
+    }
+
+    /// The same with the default settings and the secrets service on a wrapper of its store, to
+    /// make a read seal Hécate, for example.
+    pub fn with_secret_store(
+        crypto: Arc<dyn CryptoProvider>,
+        pki: Arc<dyn PkiProvider>,
+        verifier: Arc<dyn CallTokenVerifier>,
+        wrap: impl FnOnce(Arc<InMemorySecretStore>, Arc<SealingService>) -> Arc<dyn SecretStore>,
+    ) -> Self {
+        Self::built(
+            (crypto, pki, verifier),
+            (CaSettings::default(), IdentitySettings::default()),
+            Box::new(wrap),
+        )
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn built(
+        (crypto, pki, verifier): (
+            Arc<dyn CryptoProvider>,
+            Arc<dyn PkiProvider>,
+            Arc<dyn CallTokenVerifier>,
+        ),
+        (ca_settings, settings): (CaSettings, IdentitySettings),
+        wrap: Box<SecretStoreWrap<'_>>,
+    ) -> Self {
         let repo = Arc::new(InMemorySealRepository::new());
         let clock = Arc::new(FakeClock::new());
         let access_log = Arc::new(InMemoryAccessLog::new());
@@ -790,6 +839,8 @@ impl CaRig {
             .expect("unseal");
         let store = Arc::new(InMemoryIdentityStore::new());
         let attempts = Arc::new(InMemoryEnrollAttempts::default());
+        let secrets_store = Arc::new(InMemorySecretStore::new());
+        let secret_store = wrap(secrets_store.clone(), sealing.clone());
         Self::assemble(
             (crypto, pki, verifier),
             repo,
@@ -797,6 +848,7 @@ impl CaRig {
             access_log,
             sealing,
             (store, attempts),
+            (secrets_store, secret_store),
             (ca_settings, settings),
             shares,
         )
@@ -814,6 +866,7 @@ impl CaRig {
         access_log: Arc<InMemoryAccessLog>,
         sealing: Arc<SealingService>,
         (store, attempts): (Arc<InMemoryIdentityStore>, Arc<InMemoryEnrollAttempts>),
+        (secrets_store, secret_store): (Arc<InMemorySecretStore>, Arc<dyn SecretStore>),
         (ca_settings, settings): (CaSettings, IdentitySettings),
         shares: Vec<String>,
     ) -> Self {
@@ -826,9 +879,26 @@ impl CaRig {
             clock.clone(),
             ca_settings,
         ));
+        let secrets = Arc::new(SecretsService::new(
+            sealing.clone(),
+            secret_store.clone(),
+            crypto.clone(),
+            access_log.clone(),
+            clock.clone(),
+            SecretsSettings::default(),
+        ));
+        let policies = Arc::new(AccessPolicyService::new(
+            sealing.clone(),
+            store.clone(),
+            secret_store.clone(),
+            access_log.clone(),
+            clock.clone(),
+        ));
         let identities = Arc::new(IdentityService::new(
             sealing.clone(),
             service.clone(),
+            policies.clone(),
+            secrets.clone(),
             store.clone(),
             attempts.clone(),
             pki.clone(),
@@ -849,8 +919,12 @@ impl CaRig {
             attempts,
             service,
             identities,
+            policies,
+            secrets_store,
+            secrets,
             shares,
             verifier,
+            secret_store,
             ca_settings,
             settings,
         }
@@ -871,6 +945,7 @@ impl CaRig {
             self.access_log.clone(),
             sealing,
             (self.store.clone(), self.attempts.clone()),
+            (self.secrets_store.clone(), self.secret_store.clone()),
             (self.ca_settings, self.settings),
             self.shares.clone(),
         )

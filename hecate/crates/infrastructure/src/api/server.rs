@@ -34,8 +34,9 @@ use crate::api::envelope::{ApiError, RequestContext, SEALED, request_context};
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Whether Hécate is sealed now; while it is, every route answers `unavailable`.
-pub type SealedCheck = Arc<dyn Fn() -> bool + Send + Sync>;
+/// Whether a request is refused because Hécate is sealed, given its method and its path: while it
+/// is sealed, every route answers `unavailable` except the ones that answer sealed (FR-012).
+pub type SealedCheck = Arc<dyn Fn(&Method, &str) -> bool + Send + Sync>;
 
 /// Leaves the row of a request refused before its operation ran, given its method and its
 /// path, which say what operation it is (FR-024). It may answer in place of the refusal, as the
@@ -156,7 +157,7 @@ pub fn server_config(tls: ServerTls) -> Result<ServerConfig, rustls::Error> {
 
 async fn sealed_guard(State(guard): State<SealedGuard>, request: Request, next: Next) -> Response {
     match request.extensions().get::<RequestContext>().cloned() {
-        Some(context) if (guard.sealed)() => {
+        Some(context) if (guard.sealed)(request.method(), request.uri().path()) => {
             let (method, path) = (request.method().clone(), request.uri().path().to_string());
             let answer = record_refusal(guard.refused, method, path, CallRefusal::Sealed).await;
             context.failed(&answer.unwrap_or_else(|| ApiError::Unavailable(SEALED.to_string())))

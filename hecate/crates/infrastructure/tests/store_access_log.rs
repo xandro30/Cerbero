@@ -111,6 +111,53 @@ fn every_new_operation_and_method_has_its_text() {
 }
 
 #[test]
+fn rows_of_the_access_policy_and_the_status_are_written_and_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = SqliteAccessLog::open(&dir.path().join("hecate.db")).unwrap();
+    let admin = |operation, identity| {
+        entry(
+            operation,
+            Method::Local,
+            AccessResult::Success,
+            Some("admin"),
+            identity,
+            None,
+        )
+    };
+    let mut grant = admin(Operation::PolicyGrant, Some("hermes"));
+    grant.detail = "read".to_string();
+    grant.path = Some("secret://hades/smtp/password".to_string());
+    let mut revoke = admin(Operation::PolicyRevoke, Some("hermes"));
+    revoke.detail = "status".to_string();
+    let entries = [
+        grant,
+        revoke,
+        admin(Operation::PolicyList, None),
+        admin(Operation::PolicyGet, Some("hermes")),
+        entry(
+            Operation::StatusGet,
+            Method::Identity,
+            AccessResult::Failure,
+            Some("spiffe://cerbero.test/hermes"),
+            Some("hermes"),
+            Some("6a2d"),
+        ),
+        entry(
+            Operation::StatusGet,
+            Method::Identity,
+            AccessResult::Failure,
+            None,
+            None,
+            None,
+        ),
+    ];
+    for entry in &entries {
+        log.append(entry).unwrap();
+    }
+    assert_eq!(log.entries().unwrap(), entries.to_vec());
+}
+
+#[test]
 fn the_log_still_rejects_update_and_delete() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("hecate.db");

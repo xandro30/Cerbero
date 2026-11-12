@@ -19,10 +19,12 @@ use hecate_domain::identity::throttle::EnrollAttempts;
 use hecate_domain::identity::token::EnrollmentToken;
 use hecate_domain::sealing::access_log::{AccessLogEntry, AccessResult, Method, Operation};
 use hecate_domain::sealing::errors::HecateError;
+use hecate_domain::secrets::path::SecretPath;
 use serde_json::Value;
 use time::{Duration, OffsetDateTime};
 use zeroize::Zeroizing;
 
+use crate::access_policy::service::AccessPolicyService;
 use crate::ca::service::{CaService, HECATE};
 use crate::errors::ServiceError;
 use crate::identity::jti::SeenTokens;
@@ -32,7 +34,7 @@ use crate::ports::{
     PkiProvider, RevokedCertificate,
 };
 use crate::sealing::service::SealingService;
-use crate::secrets::service::ADMIN;
+use crate::secrets::service::{ADMIN, CallContext, MAX_REFERENCES, Resolved, SecretsService};
 
 pub const IDENTITY_PREFIX: &str = "identity/";
 const CERTIFICATE_PREFIX: &str = "certificate/";
@@ -177,6 +179,21 @@ pub struct IdentityCounts {
     pub suspicious_renewals_24h: u64,
 }
 
+/// The aggregate status that a component with the status permission reads (US3, FR-011): counts
+/// computed from metadata, which name no secret and no identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AggregateStatus {
+    pub sealed: bool,
+    pub secrets_expired: u64,
+    pub secrets_expiring_soon: u64,
+    pub secrets_due_rotation: u64,
+    pub identities_expiring_24h: u64,
+    pub suspicious_renewals_24h: u64,
+    /// The days left to the active intermediate, only when fewer than 30.
+    pub intermediate_days_left: Option<u64>,
+    pub enrollment_throttled: bool,
+}
+
 /// What the row of an operation of a component says: the identity it names, who sent it once
 /// recognized, the certificate, and its detail.
 #[derive(Default)]
@@ -301,6 +318,19 @@ fn parse_request<'a>(
     })
 }
 
+/// The references of a resolution: the body is exactly `{"references": [...]}`.
+fn references_of(body: &Value) -> Result<&Value, ServiceError> {
+    let rule = || {
+        invalid(format!(
+            "the body is {{\"references\": [...]}} with 1 to {MAX_REFERENCES} secret references"
+        ))
+    };
+    match body.as_object() {
+        Some(fields) if fields.len() == 1 => fields.get("references").ok_or_else(rule),
+        _ => Err(rule()),
+    }
+}
+
 fn decode_identity(name: IdentityName, records: &[EventRecord]) -> Result<Identity, ServiceError> {
     let events = records
         .iter()
@@ -322,6 +352,8 @@ fn decode_certificate(records: &[EventRecord]) -> Result<Certificate, ServiceErr
 pub struct IdentityService {
     sealing: Arc<SealingService>,
     ca: Arc<CaService>,
+    policies: Arc<AccessPolicyService>,
+    secrets: Arc<SecretsService>,
     store: Arc<dyn IdentityStore>,
     attempts: Arc<dyn EnrollAttemptsRepository>,
     pki: Arc<dyn PkiProvider>,
@@ -340,6 +372,8 @@ impl IdentityService {
     pub fn new(
         sealing: Arc<SealingService>,
         ca: Arc<CaService>,
+        policies: Arc<AccessPolicyService>,
+        secrets: Arc<SecretsService>,
         store: Arc<dyn IdentityStore>,
         attempts: Arc<dyn EnrollAttemptsRepository>,
         pki: Arc<dyn PkiProvider>,
@@ -353,6 +387,8 @@ impl IdentityService {
         Self {
             sealing,
             ca,
+            policies,
+            secrets,
             store,
             attempts,
             pki,
@@ -1200,6 +1236,109 @@ impl IdentityService {
             )?;
         }
         outcome
+    }
+
+    /// The secrets that a component resolves (US1, FR-001 to FR-006): authenticated by the
+    /// certificate of its connection and a short call token, its own secrets and the ones that its
+    /// Access Policy shares with it, read once per request, all or nothing. Sealed, Hécate
+    /// answers `unavailable`, with its row; a refusal before the resolution leaves its own row,
+    /// and the resolution leaves the rows of the secrets service (FR-015).
+    pub fn resolve(
+        &self,
+        credentials: &Credentials,
+        body: &Value,
+    ) -> Result<Vec<Resolved>, ServiceError> {
+        self.unsealed_for(Operation::SecretResolve, Method::Identity)?;
+        let now = self.now();
+        let mut trace = Trace::default();
+        let checked = self
+            .authenticate(credentials, now, &mut trace)
+            .and_then(|caller| {
+                let references = references_of(body)?;
+                let policy = self.policies.policy_of(&caller.identity)?;
+                Ok((caller, references, policy))
+            });
+        let (caller, references, policy) = match checked {
+            Ok(checked) => checked,
+            Err(error) => {
+                self.log(
+                    Operation::SecretResolve,
+                    Method::Identity,
+                    trace.subject.as_deref(),
+                    result_for(&error),
+                    trace.identity.as_deref(),
+                    trace.certificate.as_deref(),
+                    "resolve",
+                )?;
+                return Err(error);
+            }
+        };
+        let subject = caller.spiffe_id.to_string();
+        let identity = caller.identity.to_string();
+        let certificate = caller.serial.to_string();
+        let context = CallContext {
+            subject: &subject,
+            identity: Some(&identity),
+            certificate: Some(&certificate),
+        };
+        self.secrets.resolve_for(
+            &context,
+            &|path: &SecretPath| policy.can_read(path),
+            references,
+        )
+    }
+
+    /// The least time that a `not_found` of the resolution takes (research R2).
+    pub fn refusal_floor(&self) -> std::time::Duration {
+        self.settings.refusal_floor
+    }
+
+    /// The aggregate status for a component with the status permission (US3, FR-011, FR-012).
+    /// It also answers sealed: neither the authentication nor the policy nor the counts touch
+    /// encrypted material. Served, it leaves no row; refused, it does (FR-015).
+    pub fn status(&self, credentials: &Credentials) -> Result<AggregateStatus, ServiceError> {
+        let now = self.now();
+        let mut trace = Trace::default();
+        let outcome = self
+            .authenticate(credentials, now, &mut trace)
+            .and_then(|caller| {
+                if !self.policies.policy_of(&caller.identity)?.has_status() {
+                    return Err(refused("the identity does not have the status permission"));
+                }
+                self.aggregate_status()
+            });
+        if let Err(error) = &outcome {
+            self.log(
+                Operation::StatusGet,
+                Method::Identity,
+                trace.subject.as_deref(),
+                result_for(error),
+                trace.identity.as_deref(),
+                trace.certificate.as_deref(),
+                "get",
+            )?;
+        }
+        outcome
+    }
+
+    /// The counts of the aggregate status, from the same sources as the `status` of the local
+    /// channel.
+    fn aggregate_status(&self) -> Result<AggregateStatus, ServiceError> {
+        let secrets = self.secrets.expiry_counts(None)?;
+        let identities = self.counts()?;
+        Ok(AggregateStatus {
+            sealed: self.sealing.unsealed_epoch().is_err(),
+            secrets_expired: secrets.secrets_expired,
+            secrets_expiring_soon: secrets.secrets_expiring_soon,
+            secrets_due_rotation: secrets.secrets_due_rotation,
+            identities_expiring_24h: identities.identities_expiring_24h,
+            suspicious_renewals_24h: identities.suspicious_renewals_24h,
+            intermediate_days_left: self
+                .ca
+                .status()?
+                .and_then(|summary| summary.intermediate_days_left),
+            enrollment_throttled: self.enrollment_throttled()?,
+        })
     }
 
     /// Every registered call key, with whether it signs new calls now.

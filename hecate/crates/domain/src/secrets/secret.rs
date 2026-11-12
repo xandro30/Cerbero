@@ -10,6 +10,7 @@ use time::{Duration, OffsetDateTime};
 use crate::events::{EventRecord, Fields, InvalidEvents, event_data, instant_value};
 use crate::sealing::errors::HecateError;
 use crate::secrets::path::SecretPath;
+use crate::secrets::rotation::RotationInterval;
 use crate::secrets::value_type::ValueType;
 
 pub const DEFAULT_MAX_VERSIONS: u64 = 10;
@@ -390,6 +391,22 @@ impl Secret {
             .map(|version| version.number)
     }
 
+    /// Whether the secret must be rotated (FR-013): its `rotate_every` is a duration and its
+    /// active version is at least that old. Without an active version, or with a `rotate_every`
+    /// saved before it was a duration, it is not.
+    pub fn due_for_rotation(&self, now: OffsetDateTime) -> bool {
+        let Some(interval) = self
+            .rotate_every
+            .as_deref()
+            .and_then(|text| RotationInterval::parse(text).ok())
+        else {
+            return false;
+        };
+        self.active_version()
+            .and_then(|number| self.versions.get(&number))
+            .is_some_and(|version| interval.is_due(version.created_at, now))
+    }
+
     pub fn live_versions(&self) -> Vec<u64> {
         self.versions
             .values()
@@ -657,7 +674,7 @@ mod tests {
     #[test]
     fn create_gives_version_one_active_and_the_metadata() {
         let expires = T0 + Duration::days(30);
-        let h = Harness::with(5, Some("90d"), Some(expires));
+        let h = Harness::with(5, Some("P90D"), Some(expires));
         let s = &h.secret;
         assert_eq!(
             (&s.path, s.owner.as_str(), s.value_type, s.max_versions),
@@ -665,7 +682,7 @@ mod tests {
         );
         assert_eq!(
             (s.rotate_every.as_deref(), s.expires_at),
-            (Some("90d"), Some(expires))
+            (Some("P90D"), Some(expires))
         );
         assert_eq!((s.stream_version, s.active_version()), (2, Some(1)));
         assert_eq!(h.state(1, T0), VersionState::Active);

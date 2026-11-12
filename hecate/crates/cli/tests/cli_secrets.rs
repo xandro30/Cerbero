@@ -6,6 +6,7 @@ mod common;
 use std::sync::Arc;
 
 use common::*;
+use hecate_application::access_policy::service::AccessPolicyService;
 use hecate_application::ca::service::CaService;
 use hecate_application::ca::settings::CaSettings;
 use hecate_application::identity::service::IdentityService;
@@ -53,9 +54,18 @@ fn running() -> Running {
         rig.clock.clone(),
         CaSettings::default(),
     ));
+    let policies = Arc::new(AccessPolicyService::new(
+        rig.sealing.clone(),
+        identity_store.clone(),
+        rig.store.clone(),
+        rig.access_log.clone(),
+        rig.clock.clone(),
+    ));
     let identities = Arc::new(IdentityService::new(
         rig.sealing.clone(),
         ca.clone(),
+        policies.clone(),
+        rig.service.clone(),
         identity_store,
         Arc::new(InMemoryEnrollAttempts::default()),
         pki,
@@ -71,6 +81,7 @@ fn running() -> Running {
         IdentityOperations {
             ca,
             identities,
+            policies,
             changed: Arc::new(|| {}),
         },
     );
@@ -154,7 +165,7 @@ fn a_value_from_a_file_has_its_line_breaks_converted_and_the_options_reach_hecat
         "--max-versions",
         "3",
         "--rotate-every",
-        "30d",
+        "P30D",
         "--expires-at",
         "2027-01-01T00:00:00+00:00",
     ];
@@ -179,7 +190,7 @@ fn a_value_from_a_file_has_its_line_breaks_converted_and_the_options_reach_hecat
         0
     );
     let out = terminal.take_out();
-    assert!(out.contains("max versions 3") && out.contains("rotate every: 30d"));
+    assert!(out.contains("max versions 3") && out.contains("rotate every: P30D"));
     assert!(out.contains("expires at: 2027-01-01T00:00:00+00:00"));
 }
 
@@ -355,6 +366,34 @@ fn errors_exit_with_1_and_the_python_message() {
     );
 }
 
+/// T050: a `--rotate-every` that is not a duration in days or weeks is refused with the message
+/// that contracts/cli.md fixes, and nothing is created (FR-023).
+#[test]
+fn a_rotate_every_that_is_not_a_duration_is_refused() {
+    let env = running();
+    let mut terminal = Scripted::new(vec![line("value")]);
+    let code = hecate(
+        &env.config,
+        &mut terminal,
+        &[
+            "secrets",
+            "create",
+            PATH,
+            "--type",
+            "string",
+            "--rotate-every",
+            "90d",
+        ],
+    );
+    assert_eq!(code, 1);
+    assert_eq!(
+        terminal.take_err(),
+        "error (validation): rotate_every must be an ISO 8601 duration in days or weeks, such as \
+         P90D or P12W"
+    );
+    assert!(env.rig.store.is_empty());
+}
+
 #[test]
 fn cancelling_the_value_prompt_creates_nothing() {
     let env = running();
@@ -392,6 +431,6 @@ fn list_without_secrets_and_status_with_the_expiry_counts() {
     assert_eq!(hecate(&env.config, &mut terminal, &["status"]), 0);
     assert_eq!(
         terminal.take_out(),
-        "state: unsealed\nsecrets expired: 0\nsecrets expiring in the next 7 days: 1\nca: none"
+        "state: unsealed\nsecrets expired: 0\nsecrets expiring in the next 7 days: 1\nsecrets due rotation: 0\nca: none"
     );
 }

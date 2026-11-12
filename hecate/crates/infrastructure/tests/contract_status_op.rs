@@ -207,10 +207,12 @@ fn status_counts_expired_and_expiring_soon_secrets_without_paths() {
     expected.extend([
         "secrets_expired".to_string(),
         "secrets_expiring_soon".to_string(),
+        "secrets_due_rotation".to_string(),
     ]);
     expected.sort();
     assert_eq!(fields(&reply["data"]), expected);
     assert_eq!(counts(&reply["data"]), (1, 1));
+    assert_eq!(reply["data"]["secrets_due_rotation"], 0);
     let shown = reply.to_string();
     assert!(
         !shown.contains("secret://")
@@ -258,6 +260,29 @@ fn the_counts_are_available_while_sealed() {
     let reply = call(&handler, "status", json!({}));
     assert!(reply["status"] == "completed" && reply["data"]["state"] == "sealed");
     assert_eq!(counts(&reply["data"]), (1, 1));
+}
+
+// T035: the secrets due for rotation are counted too, also while sealed (FR-013).
+#[test]
+fn status_counts_the_secrets_due_for_rotation_also_while_sealed() {
+    let (rig, handler) = secrets_env();
+    let options = CreateOptions {
+        rotate_every: json!("P1D"),
+        ..CreateOptions::default()
+    };
+    rig.service
+        .create("secret://hermes/daily", "daily-value", "string", &options)
+        .unwrap();
+    let due = |handler: &RequestHandler| {
+        call(handler, "status", json!({}))["data"]["secrets_due_rotation"].clone()
+    };
+    assert_eq!(due(&handler), 0);
+    rig.clock.advance(time::Duration::days(1));
+    assert_eq!(due(&handler), 1);
+    rig.sealing.seal().unwrap();
+    let reply = call(&handler, "status", json!({}));
+    assert_eq!(reply["data"]["state"], "sealed");
+    assert_eq!(reply["data"]["secrets_due_rotation"], 1);
 }
 
 // py: contract/test_status_op.py::test_expiry_counts_can_be_asked_for_directly_and_leave_no_row_in_the_access_log

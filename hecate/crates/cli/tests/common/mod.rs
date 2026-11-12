@@ -159,6 +159,7 @@ pub fn ca_running() -> CaRunning {
         IdentityOperations {
             ca: rig.service.clone(),
             identities: rig.identities.clone(),
+            policies: rig.policies.clone(),
             changed: Arc::new(|| {}),
         },
     );

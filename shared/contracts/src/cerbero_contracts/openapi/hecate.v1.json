@@ -3,8 +3,8 @@
   "info": {
     "title": "Hécate API",
     "version": "1.0.0",
-    "summary": "Enrollment, renewal, revocation lists, published call-signing keys and capabilities of Hécate.",
-    "description": "TLS 1.3 only. Every operation but the enrollment requires a client certificate issued by Hécate with the current CA and a short call token bound to it. Requests are standard JSON in UTF-8 of up to 64 KiB. While Hécate is sealed, every operation answers unavailable.",
+    "summary": "Enrollment, renewal, revocation lists, published call-signing keys, secret resolution, the aggregate status and capabilities of Hécate.",
+    "description": "TLS 1.3 only. Every operation but the enrollment requires a client certificate issued by Hécate with the current CA and a short call token bound to it. Requests are standard JSON in UTF-8 of up to 64 KiB. While Hécate is sealed, every operation but the status answers unavailable; the status answers with sealed set to true.",
     "license": {
       "name": "AGPL-3.0-or-later",
       "identifier": "AGPL-3.0-or-later"
@@ -201,6 +201,74 @@
         }
       }
     },
+    "/v1/secrets:resolve": {
+      "post": {
+        "operationId": "resolveSecrets",
+        "summary": "The values of one or more secrets that the identity of the connection's certificate can read.",
+        "description": "An identity reads its own secrets and the exact secrets that its Access Policy shares with it. All or nothing: if a reference does not exist, belongs to another identity without an exception or has no resolvable version, no value is returned and the answer is the same not_found in the three cases, never sooner than 250 ms after the request reaches the operation. Without @N the active version is resolved; with @N, an active one or a deprecated one within its grace period. It changes nothing but the access log, so it takes no Idempotency-Key.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Resolved"
+          },
+          "400": {
+            "$ref": "#/components/responses/Validation"
+          },
+          "401": {
+            "$ref": "#/components/responses/Auth"
+          },
+          "404": {
+            "$ref": "#/components/responses/SecretNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/v1/status": {
+      "get": {
+        "operationId": "getStatus",
+        "summary": "The aggregate status of Hécate, for the identities with the status permission.",
+        "description": "Whether Hécate is sealed and how many secrets and certificates need attention, without naming any secret or identity. It also answers while Hécate is sealed, with the same authentication.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Status"
+          },
+          "400": {
+            "$ref": "#/components/responses/Validation"
+          },
+          "401": {
+            "$ref": "#/components/responses/StatusAuth"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          }
+        }
+      }
+    },
     "/v1/capabilities": {
       "get": {
         "operationId": "getCapabilities",
@@ -366,6 +434,48 @@
           }
         }
       },
+      "Resolved": {
+        "description": "The secrets in the order requested.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "common.v1.json#/components/schemas/Completed"
+                },
+                {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ResolveResult"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "Status": {
+        "description": "The aggregate status, without naming any secret or identity.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "common.v1.json#/components/schemas/Completed"
+                },
+                {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/HecateStatus"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
       "Capabilities": {
         "description": "The component, the major version and its operations.",
         "content": {
@@ -407,8 +517,28 @@
           }
         }
       },
+      "StatusAuth": {
+        "description": "auth: the certificate or the short call token are not valid, or the identity does not have the status permission.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/AuthFailure"
+            }
+          }
+        }
+      },
       "NotFound": {
         "description": "not_found: no key has that kid.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/NotFoundFailure"
+            }
+          }
+        }
+      },
+      "SecretNotFound": {
+        "description": "not_found: a reference does not exist, belongs to another identity without an exception or has no resolvable version; the message is the same in the three cases.",
         "content": {
           "application/json": {
             "schema": {
@@ -648,6 +778,119 @@
           }
         }
       },
+      "SecretReference": {
+        "type": "string",
+        "description": "secret://<identity>/<segment>[/<segment>...] with an optional @<version>: the identity follows the rule of identity names, each segment is 1-64 characters of a-z, 0-9, '_' and '-', and the version is a number of 1 to 9 digits without leading zeros.",
+        "pattern": "^secret://[a-z][a-z0-9-]{0,62}(/[a-z0-9_-]{1,64})+(@[1-9][0-9]{0,8})?$"
+      },
+      "ResolveRequest": {
+        "type": "object",
+        "required": ["references"],
+        "additionalProperties": false,
+        "properties": {
+          "references": {
+            "description": "A repeated reference is resolved again, with the same result.",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/SecretReference"
+            }
+          }
+        }
+      },
+      "ResolvedSecret": {
+        "type": "object",
+        "required": ["reference", "version", "value", "cache_ttl_soft_s", "cache_ttl_hard_s"],
+        "additionalProperties": false,
+        "properties": {
+          "reference": {
+            "$ref": "#/components/schemas/SecretReference"
+          },
+          "version": {
+            "description": "The version resolved.",
+            "type": "integer",
+            "minimum": 1
+          },
+          "value": {
+            "description": "The value in UTF-8 text, as it was stored, whatever its type (string, json or pem).",
+            "type": "string"
+          },
+          "cache_ttl_soft_s": {
+            "description": "Seconds during which the component may use its cached value before refreshing it: 300.",
+            "type": "integer",
+            "minimum": 1
+          },
+          "cache_ttl_hard_s": {
+            "description": "Seconds after which the component must stop using its cached value: 3600.",
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "ResolveResult": {
+        "type": "object",
+        "required": ["secrets"],
+        "additionalProperties": false,
+        "properties": {
+          "secrets": {
+            "description": "One per reference, in the order requested.",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/ResolvedSecret"
+            }
+          }
+        }
+      },
+      "HecateStatus": {
+        "type": "object",
+        "description": "Counts computed from metadata, without encrypted material; no member names a secret or an identity.",
+        "required": ["sealed", "secrets_expired", "secrets_expiring_soon", "secrets_due_rotation", "identities_expiring_24h", "suspicious_renewals_24h", "intermediate_days_left", "enrollment_throttled"],
+        "additionalProperties": false,
+        "properties": {
+          "sealed": {
+            "description": "Whether Hécate is sealed.",
+            "type": "boolean"
+          },
+          "secrets_expired": {
+            "description": "Secrets with live versions whose expires_at has passed.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "secrets_expiring_soon": {
+            "description": "Secrets with live versions that expire within 7 days.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "secrets_due_rotation": {
+            "description": "Secrets whose rotate_every is a duration and whose active version is at least that old.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "identities_expiring_24h": {
+            "description": "Enabled identities whose most recent certificate expires within 24 hours.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "suspicious_renewals_24h": {
+            "description": "Suspicious renewal attempts in the last 24 hours.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "intermediate_days_left": {
+            "description": "Days left to the active intermediate when fewer than 30 remain, a part of a day counting as a day; null otherwise.",
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "maximum": 30
+          },
+          "enrollment_throttled": {
+            "description": "Whether enrollments are throttled.",
+            "type": "boolean"
+          }
+        }
+      },
       "CapabilitiesResult": {
         "type": "object",
         "required": ["component", "api", "operations"],
@@ -663,7 +906,7 @@
             "type": "array",
             "uniqueItems": true,
             "items": {
-              "enum": ["identities:enroll", "certificates:renew", "revocations", "keys", "keys/{kid}", "capabilities"]
+              "enum": ["identities:enroll", "certificates:renew", "revocations", "keys", "keys/{kid}", "secrets:resolve", "status", "capabilities"]
             }
           }
         }

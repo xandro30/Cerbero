@@ -12,28 +12,34 @@ use axum::response::Response;
 use axum::routing::{get, post};
 use hecate_application::errors::ServiceError;
 use hecate_application::identity::service::{CallRefusal, Enrolled, IdentityService, PublishedKey};
+use hecate_application::sealing::service::SealingService;
+use hecate_application::secrets::service::Resolved;
 use hecate_domain::pem;
 use hecate_domain::sealing::access_log::{Method as AccessMethod, Operation};
 use hecate_domain::sealing::errors::HecateError;
+use serde::Serialize;
+use serde::ser::{SerializeStruct, Serializer};
 use serde_json::{Value, json};
 
 use crate::api::auth::CallCredentials;
 use crate::api::envelope::{ApiError, RequestContext};
 use crate::api::instant;
 use crate::api::json::JsonBody;
-use crate::api::server::RefusalRecorder;
+use crate::api::server::{RefusalRecorder, SealedCheck};
 use crate::control::protocol::erase;
 
 pub const IDEMPOTENCY_KEY: &str = "idempotency-key";
 const CERTIFICATE: &str = "CERTIFICATE";
 const CRL: &str = "X509 CRL";
 /// The operations of this version of the API, as `GET /v1/capabilities` lists them.
-pub const OPERATIONS: [&str; 6] = [
+pub const OPERATIONS: [&str; 8] = [
     "identities:enroll",
     "certificates:renew",
     "revocations",
     "keys",
     "keys/{kid}",
+    "secrets:resolve",
+    "status",
     "capabilities",
 ];
 
@@ -45,6 +51,8 @@ pub fn routes(identities: Arc<IdentityService>) -> Router {
         .route("/v1/revocations", get(revocations))
         .route("/v1/keys", get(keys))
         .route("/v1/keys/{kid}", get(key))
+        .route("/v1/secrets:resolve", post(resolve))
+        .route("/v1/status", get(status))
         .route("/v1/capabilities", get(capabilities))
         .with_state(identities)
 }
@@ -63,8 +71,10 @@ pub fn operation_of(method: &Method, path: &str) -> Option<(Operation, AccessMet
             return Some((Operation::IdentityEnroll, AccessMethod::EnrollmentToken));
         }
         ("POST", "/v1/certificates:renew") => Operation::CertificateRenew,
+        ("POST", "/v1/secrets:resolve") => Operation::SecretResolve,
         ("GET", "/v1/revocations") => Operation::RevocationList,
         ("GET", "/v1/keys") => Operation::KeyList,
+        ("GET", "/v1/status") => Operation::StatusGet,
         ("GET", "/v1/capabilities") => Operation::CapabilitiesGet,
         ("GET", path)
             if path
@@ -76,6 +86,19 @@ pub fn operation_of(method: &Method, path: &str) -> Option<(Operation, AccessMet
         _ => return None,
     };
     Some((operation, AccessMethod::Identity))
+}
+
+/// Whether a request answers also while Hécate is sealed: only the status (FR-012).
+pub fn answers_while_sealed(method: &Method, path: &str) -> bool {
+    matches!(operation_of(method, path), Some((Operation::StatusGet, _)))
+}
+
+/// What refuses a request because Hécate is sealed: every request but the status, while it is
+/// sealed.
+pub fn sealed_check(sealing: Arc<SealingService>) -> SealedCheck {
+    Arc::new(move |method: &Method, path: &str| {
+        !answers_while_sealed(method, path) && sealing.unsealed_epoch().is_err()
+    })
 }
 
 /// What leaves the row of a request refused before its operation runs (FR-024), when the request
@@ -235,6 +258,90 @@ async fn capabilities(
     )
 }
 
+/// `GET /v1/status`: the aggregate status for a component with the status permission, also
+/// sealed (US3, FR-011, FR-012); served, it leaves no row.
+async fn status(
+    State(identities): State<Arc<IdentityService>>,
+    context: RequestContext,
+    CallCredentials(credentials): CallCredentials,
+) -> Response {
+    let outcome = tokio::task::spawn_blocking(move || identities.status(&credentials)).await;
+    reply(&context, outcome, |status| {
+        json!({
+            "sealed": status.sealed,
+            "secrets_expired": status.secrets_expired,
+            "secrets_expiring_soon": status.secrets_expiring_soon,
+            "secrets_due_rotation": status.secrets_due_rotation,
+            "identities_expiring_24h": status.identities_expiring_24h,
+            "suspicious_renewals_24h": status.suspicious_renewals_24h,
+            "intermediate_days_left": status.intermediate_days_left,
+            "enrollment_throttled": status.enrollment_throttled,
+        })
+    })
+}
+
+/// The data of a resolution as the contract writes it (contracts/formats.md), serialized from
+/// where the values are, so they are not copied before the wiped buffer (FR-016).
+struct ResolvedSecrets<'a>(&'a [Resolved]);
+
+struct ResolvedSecret<'a>(&'a Resolved);
+
+struct SecretList<'a>(&'a [Resolved]);
+
+impl Serialize for ResolvedSecrets<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut data = serializer.serialize_struct("ResolveResult", 1)?;
+        data.serialize_field("secrets", &SecretList(self.0))?;
+        data.end()
+    }
+}
+
+impl Serialize for SecretList<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter().map(ResolvedSecret))
+    }
+}
+
+impl Serialize for ResolvedSecret<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut secret = serializer.serialize_struct("ResolvedSecret", 5)?;
+        secret.serialize_field("reference", &self.0.reference)?;
+        secret.serialize_field("version", &self.0.version)?;
+        secret.serialize_field("value", self.0.value.as_str())?;
+        secret.serialize_field("cache_ttl_soft_s", &self.0.cache_ttl_soft_s)?;
+        secret.serialize_field("cache_ttl_hard_s", &self.0.cache_ttl_hard_s)?;
+        secret.end()
+    }
+}
+
+/// `POST /v1/secrets:resolve`: the secrets of the caller and the ones that its Access Policy
+/// shares with it, all or nothing (US1). A `not_found` waits for the refusal floor since the
+/// request reached this handler, so that its three cases take the same time (FR-004); the
+/// envelope is built after the wait. The values travel in a buffer that is wiped when hyper drops
+/// the body, and the resolved secrets wipe themselves when dropped (FR-016).
+async fn resolve(
+    State(identities): State<Arc<IdentityService>>,
+    context: RequestContext,
+    CallCredentials(credentials): CallCredentials,
+    JsonBody(body): JsonBody,
+) -> Response {
+    let started = tokio::time::Instant::now();
+    let floor = identities.refusal_floor();
+    let outcome =
+        tokio::task::spawn_blocking(move || identities.resolve(&credentials, &body)).await;
+    match outcome {
+        Ok(Ok(resolved)) => context.completed_with_secrets(&ResolvedSecrets(&resolved)),
+        Ok(Err(error)) => {
+            let error = ApiError::from(error);
+            if matches!(error, ApiError::NotFound(_)) {
+                tokio::time::sleep_until(started + floor).await;
+            }
+            context.failed(&error)
+        }
+        Err(_) => context.failed(&ApiError::Internal),
+    }
+}
+
 /// `POST /v1/certificates:renew`: the certificate of the connection and a short call token
 /// authenticate the request, and it answers the same fields as an enrollment.
 async fn renew(
@@ -310,6 +417,24 @@ mod tests {
                 "/v1/capabilities".to_string(),
                 Some((Operation::CapabilitiesGet, AccessMethod::Identity)),
             ),
+            (
+                Method::POST,
+                "/v1/secrets:resolve".to_string(),
+                Some((Operation::SecretResolve, AccessMethod::Identity)),
+            ),
+            (
+                Method::GET,
+                "/v1/status".to_string(),
+                Some((Operation::StatusGet, AccessMethod::Identity)),
+            ),
+            (
+                Method::HEAD,
+                "/v1/status".to_string(),
+                Some((Operation::StatusGet, AccessMethod::Identity)),
+            ),
+            (Method::POST, "/v1/status".to_string(), None),
+            (Method::GET, "/v1/secrets:resolve".to_string(), None),
+            (Method::HEAD, "/v1/secrets:resolve".to_string(), None),
             (Method::HEAD, "/v1/identities:enroll".to_string(), None),
             (Method::HEAD, "/v1/certificates:renew".to_string(), None),
             (Method::GET, "/v1/identities:enroll".to_string(), None),
@@ -321,6 +446,25 @@ mod tests {
         ];
         for (method, path, expected) in cases {
             assert_eq!(operation_of(&method, &path), expected, "{method} {path}");
+        }
+    }
+
+    #[test]
+    fn only_the_status_answers_while_sealed() {
+        for (method, path, answers) in [
+            (Method::GET, "/v1/status", true),
+            (Method::HEAD, "/v1/status", true),
+            (Method::POST, "/v1/status", false),
+            (Method::GET, "/v1/status/", false),
+            (Method::GET, "/v1/keys", false),
+            (Method::POST, "/v1/secrets:resolve", false),
+            (Method::GET, "/anything", false),
+        ] {
+            assert_eq!(
+                answers_while_sealed(&method, path),
+                answers,
+                "{method} {path}"
+            );
         }
     }
 }

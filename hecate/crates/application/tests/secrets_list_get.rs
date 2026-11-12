@@ -1,12 +1,16 @@
 mod common;
 
 use common::*;
+use hecate_application::ports::{Clock, SecretStore};
 use hecate_application::secrets::service::{CreateOptions, SecretSummary};
 use hecate_application::testing::SecretsRig;
 use hecate_domain::instant::{isoformat, parse_iso};
 use hecate_domain::sealing::access_log::{AccessResult, Operation};
+use hecate_domain::secrets::path::SecretPath;
+use hecate_domain::secrets::secret::{Secret, SecretEvent, SecretOptions};
 use hecate_domain::secrets::value_type::ValueType;
 use serde_json::{Value, json};
+use time::Duration;
 
 const TOKEN: &str = "secret://hermes/telegram/bot_token";
 const PROXY: &str = "secret://hermes/certs/proxy";
@@ -16,7 +20,7 @@ const VALUE: &str = "the-value-that-must-never-be-shown";
 fn rig() -> SecretsRig {
     let rig = secrets();
     let options = CreateOptions {
-        rotate_every: json!("90d"),
+        rotate_every: json!("P90D"),
         expires_at: json!("2027-06-01T00:00:00+00:00"),
         ..CreateOptions::default()
     };
@@ -45,7 +49,7 @@ fn list_returns_paths_and_metadata_sorted() {
             value_type: ValueType::String,
             active_version: Some(1),
             version_count: 1,
-            rotate_every: Some("90d".into()),
+            rotate_every: Some("P90D".into()),
             expires_at: Some(parse_iso("2027-06-01T00:00:00+00:00").unwrap()),
         }
     );
@@ -113,7 +117,7 @@ fn get_returns_metadata_stream_version_and_versions() {
     assert!(got.path == TOKEN && got.owner == "hermes" && got.value_type == ValueType::String);
     assert_eq!(
         (got.max_versions, got.rotate_every.as_deref()),
-        (10, Some("90d"))
+        (10, Some("P90D"))
     );
     assert_eq!(
         got.expires_at.map(isoformat).as_deref(),
@@ -206,4 +210,77 @@ fn every_consultation_is_logged_without_the_value() {
         )
     );
     assert!(!format!("{:?}", rig.access_log.entries()).contains(VALUE));
+}
+
+// --- Feature 006: the secrets due for rotation (T032, FR-013, FR-023) -----------------------------
+
+/// A secret saved before `rotate_every` was a duration, with its free text.
+fn store_legacy(rig: &SecretsRig, path: &str, rotate_every: &str) {
+    let options = SecretOptions {
+        rotate_every: Some(rotate_every.to_string()),
+        ..SecretOptions::default()
+    };
+    let events = Secret::create(
+        &SecretPath::parse(path).unwrap(),
+        ValueType::String,
+        rig.clock.now(),
+        "legacy-fingerprint",
+        1,
+        options,
+    )
+    .unwrap();
+    let records: Vec<_> = events.iter().map(SecretEvent::encode).collect();
+    rig.store
+        .transaction(&mut |writes| writes.append(&stream_of(path), &records, 0).map(|_| ()))
+        .unwrap();
+}
+
+#[test]
+fn a_rotate_every_saved_before_it_was_a_duration_is_still_read() {
+    let rig = secrets();
+    store_legacy(&rig, "secret://hermes/legacy", "90d");
+    let got = rig.service.get("secret://hermes/legacy").unwrap();
+    assert_eq!(got.rotate_every.as_deref(), Some("90d"));
+    let listed = rig.service.list_secrets(&json!("hermes")).unwrap();
+    assert_eq!(paths(&listed), ["secret://hermes/legacy"]);
+}
+
+#[test]
+fn the_secrets_due_for_rotation_are_counted_from_their_active_version() {
+    let rig = secrets();
+    let rotating = |path: &str, rotate_every: &str| {
+        let options = CreateOptions {
+            rotate_every: json!(rotate_every),
+            ..CreateOptions::default()
+        };
+        rig.service.create(path, VALUE, "string", &options).unwrap();
+    };
+    rotating("secret://hermes/daily", "P1D");
+    rotating("secret://hermes/fortnightly", "P2W");
+    rotating("secret://hermes/revoked", "P1D");
+    rig.service
+        .revoke("secret://hermes/revoked", &json!(1), &json!(2))
+        .unwrap();
+    create(&rig, "secret://hermes/never", VALUE, "string");
+    store_legacy(&rig, "secret://hermes/legacy", "90d");
+    let due = || {
+        rig.service
+            .expiry_counts(None)
+            .unwrap()
+            .secrets_due_rotation
+    };
+    assert_eq!(due(), 0);
+    rig.clock
+        .advance(Duration::days(1) - Duration::microseconds(1));
+    assert_eq!(due(), 0);
+    rig.clock.advance(Duration::microseconds(1));
+    assert_eq!(due(), 1, "at the exact instant it counts");
+    rig.clock.advance(Duration::days(13));
+    assert_eq!(due(), 2);
+    rig.service
+        .add_version("secret://hermes/daily", "a new value", &json!(2))
+        .unwrap();
+    assert_eq!(due(), 1, "the new active version starts again");
+    rig.clock.advance(Duration::days(100));
+    assert_eq!(due(), 2, "neither the revoked one nor the legacy one count");
 }

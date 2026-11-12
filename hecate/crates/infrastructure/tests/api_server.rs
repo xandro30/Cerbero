@@ -14,7 +14,7 @@ use axum::extract::{Extension, Path};
 use axum::response::Response;
 use axum::routing::{get, post};
 use hecate_application::identity::service::CallRefusal;
-use hecate_infrastructure::api::envelope::{ApiError, RequestContext};
+use hecate_infrastructure::api::envelope::{ApiError, RequestContext, wiped_json};
 use hecate_infrastructure::api::json::{JsonBody, MAX_BODY};
 use hecate_infrastructure::api::server::{
     ApiServer, PeerCertificates, RefusalRecorder, SealedCheck, ServerTls, app, server_config,
@@ -40,6 +40,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+use zeroize::Zeroizing;
 
 // --- A throwaway PKI -------------------------------------------------------------------------
 
@@ -117,8 +118,35 @@ async fn error(context: RequestContext, Path(code): Path<String>) -> Response {
     context.failed(&error)
 }
 
+async fn secrets(context: RequestContext) -> Response {
+    context.completed_with_secrets(&json!({
+        "secrets": [{"reference": "secret://hermes/telegram/bot_token", "value": "s3cr3t"}],
+    }))
+}
+
+/// The owner of the bytes of an answer as the tests watch it: it notes when it is dropped.
+struct Watched {
+    bytes: Zeroizing<Vec<u8>>,
+    dropped: Arc<AtomicBool>,
+}
+
+impl AsRef<[u8]> for Watched {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl Drop for Watched {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::SeqCst);
+    }
+}
+
 /// What the recorder of refusals received: the method, the path and why.
 type Refused = Arc<Mutex<Vec<(String, String, CallRefusal)>>>;
+
+/// What the guard of Hécate sealed asked about: the method and the path of each request.
+type Asked = Arc<Mutex<Vec<(String, String)>>>;
 
 struct Running {
     server: ApiServer,
@@ -126,6 +154,11 @@ struct Running {
     ca: Ca,
     sealed: Arc<AtomicBool>,
     refused: Refused,
+    asked: Asked,
+    /// Whether the owner of the bytes of `/test/watched` was dropped, and whether it was still
+    /// alive when the handler answered.
+    dropped: Arc<AtomicBool>,
+    alive_when_answered: Arc<AtomicBool>,
 }
 
 async fn start() -> Running {
@@ -139,7 +172,17 @@ async fn start() -> Running {
     .unwrap();
     let sealed = Arc::new(AtomicBool::new(false));
     let flag = sealed.clone();
-    let check: SealedCheck = Arc::new(move || flag.load(Ordering::SeqCst));
+    let asked: Asked = Arc::new(Mutex::new(Vec::new()));
+    let noted_asks = asked.clone();
+    // While sealed, every route is refused but `/test/open`, which answers sealed as the status
+    // does.
+    let check: SealedCheck = Arc::new(move |method: &Method, path: &str| {
+        noted_asks
+            .lock()
+            .unwrap()
+            .push((method.to_string(), path.to_string()));
+        flag.load(Ordering::SeqCst) && path != "/test/open"
+    });
     let refused: Refused = Arc::new(Mutex::new(Vec::new()));
     let noted = refused.clone();
     // Like the throttle of the enrollments, it answers in place of one refusal.
@@ -155,10 +198,28 @@ async fn start() -> Running {
                     retry_after_s: 60,
                 })
         });
+    let dropped = Arc::new(AtomicBool::new(false));
+    let alive_when_answered = Arc::new(AtomicBool::new(false));
+    let (owner_dropped, owner_alive) = (dropped.clone(), alive_when_answered.clone());
+    let watched = move |context: RequestContext| {
+        let (dropped, alive) = (owner_dropped.clone(), owner_alive.clone());
+        async move {
+            let response =
+                context.completed_owned(&json!({"value": "s3cr3t-value"}), |bytes| Watched {
+                    bytes,
+                    dropped: dropped.clone(),
+                });
+            alive.store(!dropped.load(Ordering::SeqCst), Ordering::SeqCst);
+            response
+        }
+    };
     let routes = Router::new()
         .route("/test/peer", get(peer))
+        .route("/test/open", get(peer))
         .route("/test/echo", post(echo))
-        .route("/test/error/{code}", get(error));
+        .route("/test/error/{code}", get(error))
+        .route("/test/secrets", get(secrets))
+        .route("/test/watched", get(watched));
     let server = ApiServer::bind(
         "127.0.0.1:0".parse().unwrap(),
         Arc::new(config),
@@ -173,6 +234,9 @@ async fn start() -> Running {
         ca,
         sealed,
         refused,
+        asked,
+        dropped,
+        alive_when_answered,
     }
 }
 
@@ -683,6 +747,115 @@ async fn while_sealed_every_route_answers_unavailable() {
     .unwrap();
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(running.refused.lock().unwrap().len(), 3);
+    running.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_guard_asks_per_request_and_lets_through_the_routes_that_answer_sealed() {
+    let running = start().await;
+    running.sealed.store(true, Ordering::SeqCst);
+    let open = send(
+        running.addr,
+        client(tls13(), None),
+        get_request("/test/open"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(open.status, StatusCode::OK);
+    let closed = send(
+        running.addr,
+        client(tls13(), None),
+        post_request("/test/echo", "{}"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(closed.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        *running.asked.lock().unwrap(),
+        vec![
+            ("GET".to_string(), "/test/open".to_string()),
+            ("POST".to_string(), "/test/echo".to_string()),
+        ]
+    );
+    assert_eq!(
+        *running.refused.lock().unwrap(),
+        vec![refusal("POST", "/test/echo", CallRefusal::Sealed)]
+    );
+    running.server.shutdown().await;
+}
+
+#[test]
+fn an_answer_with_secrets_is_written_in_a_buffer_of_exactly_its_size() {
+    let value = json!({"secrets": [{"value": "a".repeat(1000)}], "count": 1});
+    let bytes = wiped_json(&value).unwrap();
+    assert_eq!(bytes.as_slice(), serde_json::to_vec(&value).unwrap());
+    assert_eq!(bytes.capacity(), bytes.len());
+}
+
+#[tokio::test]
+async fn the_buffer_of_an_answer_with_secrets_lives_until_hyper_drops_the_body() {
+    let running = start().await;
+    assert!(!running.dropped.load(Ordering::SeqCst));
+    let reply = send(
+        running.addr,
+        client(tls13(), None),
+        get_request("/test/watched"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.body["data"]["value"], "s3cr3t-value");
+    // The body owns the buffer: it was still alive when the handler answered, so it is no copy.
+    assert!(running.alive_when_answered.load(Ordering::SeqCst));
+    // Hyper drops the body once it is written, and the buffer with it.
+    let deadline = tokio::time::Instant::now() + StdDuration::from_secs(5);
+    while !running.dropped.load(Ordering::SeqCst) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the body was never dropped"
+        );
+        tokio::time::sleep(StdDuration::from_millis(10)).await;
+    }
+    running.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_answer_with_secrets_carries_the_same_envelope_as_the_others() {
+    let running = start().await;
+    let mut request = get_request("/test/secrets");
+    request
+        .headers_mut()
+        .insert("x-request-id", "req-secrets".parse().unwrap());
+    let reply = send(running.addr, client(tls13(), None), request)
+        .await
+        .unwrap();
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.headers["content-type"], "application/json");
+    assert_eq!(reply.body["status"], "completed");
+    assert_eq!(
+        reply.body["data"],
+        json!({"secrets": [{"reference": "secret://hermes/telegram/bot_token", "value": "s3cr3t"}]})
+    );
+    assert_eq!(reply.body["error"], Value::Null);
+    assert_eq!(reply.body["meta"]["request_id"], "req-secrets");
+    assert!(reply.body["meta"]["duration_ms"].is_u64());
+    let plain = send(
+        running.addr,
+        client(tls13(), None),
+        get_request("/test/peer"),
+    )
+    .await
+    .unwrap();
+    let members = |body: &Value| {
+        body.as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(members(&reply.body), members(&plain.body));
+    assert_eq!(members(&reply.body["meta"]), members(&plain.body["meta"]));
+    assert_contract(&reply);
     running.server.shutdown().await;
 }
 
