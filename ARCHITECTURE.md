@@ -229,7 +229,7 @@ Común a todo Cerbero. La CA y las claves las gestiona Hécate.
 - **mTLS** con los certificados anteriores: identidad y canal cifrado.
 - **JWT corto firmado por quien llama** con su propia clave de firma de llamadas (Ed25519, distinta de la del TLS), que registra en el alta y Hécate publica para los componentes autenticados. Lleva `iss`, `aud`, `exp` de minutos, `jti`, permisos (por tipo de servicio y operación) y el contexto de auditoría (`source`, Response, Playbook o Job, owner / maintainer o la persona).
 - **Ligado al canal:** el receptor exige que `iss` coincida con la identidad del certificado mTLS; un JWT robado no sirve desde otro componente.
-- **No repudio firmado:** cada cambio queda atribuido criptográficamente a quien lo pidió (ver la auditoría de Hécate).
+- **No repudio firmado:** cada cambio queda atribuido criptográficamente a quien lo pidió (ver la [auditoría de Hécate](docs/hecate/auditoria.md#la-firma-de-checkpoints)).
 
 ### Personas
 
@@ -261,4 +261,4 @@ Común a todo Cerbero. La CA y las claves las gestiona Hécate.
 | Hades | Las Alerts se acumulan sin atender | Hades procesa las pendientes al volver; cada Response se reanuda desde su stream |
 | Hermes | Hades no puede llamar a los servicios con contrato: el bloque falla y se reintenta según el Playbook. Las tasks ya aceptadas no se pierden | Hermes retoma las tasks no terminales desde su event store |
 | Un proveedor de Hermes | Hermes reintenta lo seguro; si no, devuelve `provider_unavailable`, `rate_limited` o `timeout` | El estado de la instancia lo refleja en `/capabilities` |
-| Hécate | Los componentes siguen con la caché de secretos hasta 1 h; después, lo que necesita un secreto falla. Las identidades aguantan hasta 3 días sin renovar | Arrancar y desbloquear (Ténaro o CLI local); procedimientos escritos para pérdida del disco, frase olvidada, CA intermedia o clave de ámbito comprometidas |
+| Hécate | Los componentes siguen con la caché de secretos hasta 1 h; después, lo que necesita un secreto falla. Las identidades aguantan hasta 3 días sin renovar | Arrancar y desbloquear (Ténaro o CLI local); [procedimientos escritos](docs/hecate/operacion.md) para pérdida del disco, frase olvidada, CA intermedia o clave de ámbito comprometidas |
