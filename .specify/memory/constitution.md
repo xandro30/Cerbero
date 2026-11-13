@@ -149,8 +149,8 @@ decisión, no un descuido.
 ## Flujo de desarrollo y documentación
 
 - **Fuentes de verdad:**
-  - `docs/<componente>.md` y ARCHITECTURE describen el diseño vigente, sin MVP, roadmap ni
-    futuro.
+  - `docs/<componente>.md` y, si los tiene, sus documentos de detalle en `docs/<componente>/`,
+    con ARCHITECTURE, describen el diseño vigente, sin MVP, roadmap ni futuro.
   - `specs/<NNN>-<nombre>/` describe un cambio: qué se quiere y cómo se va a hacer. `<NNN>` es
     el número siguiente al mayor de los que hay en `main` y en los cambios pausados de
     DECISIONS, sea cual sea la rama del cambio.
@@ -160,9 +160,9 @@ decisión, no un descuido.
     lo sustituye lo dice en su propio texto. La spec de un cambio fusionado no se modifica. Los
     dos son el registro de su fecha.
 - **Consolidación:** al cerrar un cambio, lo que modifica el diseño se lleva a
-  `docs/<componente>.md` (y a ARCHITECTURE si es transversal), y lo que resolvió una
-  decisión abierta pasa a un ADR. Los docs se actualizan solo cuando lo implementado está
-  consolidado.
+  `docs/<componente>.md` o a sus documentos de detalle (y a ARCHITECTURE si es transversal),
+  y lo que resolvió una decisión abierta pasa a un ADR. Los docs se actualizan solo cuando lo
+  implementado está consolidado.
 - **Orden:** specify → clarify si hay dudas → plan → tasks → analyze → implement → converge. Cada
   fase la revisa el propietario antes de pasar a la siguiente. Todo cambio sigue este orden,
   sea cual sea su tipo de rama: también un chore, una migración o un cambio de documentación.
@@ -320,5 +320,18 @@ decisión, no un descuido.
   - Afecta: la sección de flujo; el README («Cómo se desarrolla» y el árbol de `specs/`);
     DECISIONS (sección de cambios pausados, con la feature 003); y la feature 003, pausada hasta
     que se fusione la migración de Hécate.
+- **1.2.1 (2026-11-12) — Documentos de detalle de un componente.** Origen: el cambio 007
+  (documentación de Hécate) y la petición del propietario.
+  - Flujo de desarrollo y documentación. Qué: el diseño vigente de un componente vive en su
+    `docs/<componente>.md` y, si los tiene, en sus documentos de detalle en
+    `docs/<componente>/`, y la consolidación de un cambio va a cualquiera de ellos.
+  - Por qué: los docs de componente crecen, y el propietario prefiere un documento de alto
+    nivel que introduce cada concepto y documentos específicos que lo desarrollan. Es PATCH
+    porque aclara dónde vive el diseño sin cambiar ninguna regla.
+  - Alternativas: un documento único (descartada: difícil de manejar); una carpeta dentro del
+    componente (descartada: separa el diseño de `docs/`); no aclararlo (descartada: la
+    constitución dejaría fuera los documentos de detalle).
+  - Afecta: `docs/hecate.md` y `docs/hecate/`, y cualquier otro componente que tenga
+    documentos de detalle.
 
-**Version**: 1.2.0 | **Ratified**: 2026-11-06 | **Last Amended**: 2026-11-08
+**Version**: 1.2.1 | **Ratified**: 2026-11-06 | **Last Amended**: 2026-11-12

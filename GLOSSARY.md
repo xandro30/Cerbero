@@ -101,10 +101,10 @@ Ver también: [README](README.md) · [ARCHITECTURE](ARCHITECTURE.md)
 | **AEAD** | Hécate | Cifrado autenticado con datos asociados (p. ej. AES-256-GCM): detecta cualquier cambio y liga el dato cifrado a su ruta, versión y ámbito. |
 | **Argon2id** | Hécate | Función que deriva una clave a partir de la frase del admin, costosa a propósito para frenar ataques por fuerza bruta. |
 | **Shamir** | Hécate | Reparto de un secreto en partes, de las que hacen falta un mínimo (p. ej. 2 de 3) para reconstruirlo. Se usa para recuperar la raíz. |
-| **Sealed / Unsealed** | Hécate | Sellada: arranca sin la raíz en memoria, solo admite desbloquearse y responde `unavailable` a los componentes. Desbloqueada: con la raíz en memoria, sirve secretos y emite certificados. |
+| **Sealed / Unsealed** | Hécate | Sellada: arranca sin la raíz en memoria, solo admite desbloquearse y responde `unavailable` a los componentes, salvo el estado agregado. Desbloqueada: con la raíz en memoria, sirve secretos y emite certificados. |
 | **Crypto-shredding** | Hécate | Borrado criptográfico: destruir la DEK de un dato para que no se pueda descifrar, aunque sus eventos sigan existiendo. |
 | **Fingerprint** | Hécate | Huella con clave de una versión de secreto (HMAC del valor con una clave derivada de la clave de ámbito, 8 bytes: `ab12-cd34-ef56-7890`). Es lo único que el admin ve de un valor: le sirve para comprobar lo que escribió y no permite recuperarlo ni probar valores sin la clave. |
-| **Grace Period** (secretos) | Hécate | Tiempo en que la versión anterior de un secreto aún se resuelve tras llegar una nueva (24 h por defecto). |
+| **Grace Period** (secretos) | Hécate | Tiempo en que la versión anterior de un secreto aún se resuelve tras llegar una nueva (24 h). |
 | **Checkpoint** | Hécate, todos | Firma de Hécate sobre el último hash de cada stream de auditoría. Fija lo anterior: modificarlo rompe la cadena o la firma. |
 | **Hash Chain** | Todos | Cada evento de un stream incluye el hash del anterior, de modo que cualquier cambio o borrado se detecta. |
 | **Trust Domain** | Todos | Raíz de confianza de un entorno (`cerbero.home`, `cerbero.test`): un certificado de un trust domain no vale en otro. |

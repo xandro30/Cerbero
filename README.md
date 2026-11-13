@@ -246,6 +246,7 @@ El código y la documentación se escriben con la ayuda de [Claude Code](https:/
 - [x] Diseño conceptual de **Hermes** (contratos por tipología, librerías de proveedor, tasks, comunicación).
 - [x] Diseño conceptual de **Hécate** (secretos, claves, identidad de los proyectos, auditoría).
 - [x] Documentación por componente en `docs/`.
+- [x] **Hécate** construida en Rust: sellado, secretos, identidades (CA en dos niveles, alta, renovación única y revocación), Access Policy y resolución de secretos por la API mTLS ([docs/hecate.md](docs/hecate.md)). Lo diseñado y sin construir está en [DECISIONS](DECISIONS.md#abiertas).
 
 Lo pendiente de diseño (Echidna, esquema UDM) está en [DECISIONS](DECISIONS.md#abiertas).
 
