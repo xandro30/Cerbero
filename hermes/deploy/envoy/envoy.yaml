@@ -1,0 +1,75 @@
+# Envoy delante de Hermes (contracts/proxy.md): TLS 1.3 con el certificado de Hermes, el certificado de cliente pedido
+# sin exigirlo, la cabecera X-Forwarded-Client-Cert con SANITIZE_SET y el reenvío por el socket Unix de la API.
+# Sin interfaz de administración, y con un log de acceso sin cabeceras: nunca el certificado ni el token.
+# SDS exige que el nodo tenga id y cluster.
+node:
+  id: hermes-proxy
+  cluster: hermes
+static_resources:
+  listeners:
+    - name: hermes_api
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 8443 }
+      filter_chains:
+        - transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              require_client_certificate: false
+              disable_stateless_session_resumption: true
+              disable_stateful_session_resumption: true
+              common_tls_context:
+                tls_params:
+                  tls_minimum_protocol_version: TLSv1_3
+                  tls_maximum_protocol_version: TLSv1_3
+                alpn_protocols: ["h2", "http/1.1"]
+                tls_certificate_sds_secret_configs:
+                  - name: hermes_certificate
+                    sds_config:
+                      path_config_source: { path: /etc/envoy/sds/certificate.yaml }
+                validation_context_sds_secret_config:
+                  name: cerbero_root
+                  sds_config:
+                    path_config_source: { path: /etc/envoy/sds/validation.yaml }
+          filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: hermes
+                codec_type: AUTO
+                forward_client_cert_details: SANITIZE_SET
+                set_current_client_cert_details: { cert: true, chain: true, uri: true }
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        json_format:
+                          start_time: "%START_TIME%"
+                          method: "%REQ(:METHOD)%"
+                          path: "%REQ(:PATH)%"
+                          protocol: "%PROTOCOL%"
+                          status: "%RESPONSE_CODE%"
+                          flags: "%RESPONSE_FLAGS%"
+                          duration_ms: "%DURATION%"
+                route_config:
+                  virtual_hosts:
+                    - name: hermes
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          route: { cluster: hermes }
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+    - name: hermes
+      type: STATIC
+      load_assignment:
+        cluster_name: hermes
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    pipe: { path: /run/hermes/api.sock }

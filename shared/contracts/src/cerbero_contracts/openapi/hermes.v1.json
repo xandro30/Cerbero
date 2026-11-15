@@ -1,0 +1,823 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Cerbero Hermes API",
+    "version": "1.0.0",
+    "summary": "The API of Hermes between Cerbero components: chat.send_message, the capabilities and the connection test of an instance.",
+    "description": "Every operation needs the client certificate of a Cerbero component, forwarded by the TLS proxy, and a short call token in Authorization, as the integration guide of Hécate fixes, with aud equal to the SPIFFE ID of Hermes. A failure of a provider travels inside the envelope with HTTP 200; a failure before reaching the provider carries the HTTP status of its code. The health of Hermes is not in this API: it goes through its local administration channel.",
+    "license": {
+      "name": "AGPL-3.0-or-later",
+      "identifier": "AGPL-3.0-or-later"
+    }
+  },
+  "security": [
+    {
+      "mtls": [],
+      "callToken": []
+    }
+  ],
+  "paths": {
+    "/chat/v1/send_message": {
+      "post": {
+        "operationId": "sendMessage",
+        "summary": "Send a message to one contact through a verified chat channel.",
+        "description": "The common contract of the chat service type. The Telegram provider layer adds provider_message_ref, the message_id that Telegram gives to the message.",
+        "x-cerbero-function": {
+          "kind": "command",
+          "mode": "sync",
+          "timeout": "10s",
+          "side_effect": "Envía a ${recipient} el mensaje «${title}» por la instancia ${instance}",
+          "discloses_data": "${provider} recibe el texto del mensaje y el chat de ${recipient}",
+          "non_reversible": true
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendMessageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Sent, or the provider failed: its failure goes inside the envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "common.v1.json#/components/schemas/Completed"
+                        },
+                        {
+                          "properties": {
+                            "data": {
+                              "$ref": "#/components/schemas/SendMessageResult"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "common.v1.json#/components/schemas/Failed"
+                        },
+                        {
+                          "properties": {
+                            "error": {
+                              "properties": {
+                                "code": {
+                                  "enum": ["provider_unavailable", "rate_limited", "timeout", "conflict"]
+                                }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not follow its contract, the data do not fit the schema of the template, or the contact has more than one chat channel and no instance was given.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "common.v1.json#/components/schemas/Failed"
+                    },
+                    {
+                      "properties": {
+                        "error": {
+                          "properties": {
+                            "code": {
+                              "const": "validation"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The client certificate or the short call token are not valid; the message never says which check failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "common.v1.json#/components/schemas/Failed"
+                    },
+                    {
+                      "properties": {
+                        "error": {
+                          "properties": {
+                            "code": {
+                              "const": "auth"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The template, its version, the instance or the contact do not exist, or the contact has no channel in that instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "common.v1.json#/components/schemas/Failed"
+                    },
+                    {
+                      "properties": {
+                        "error": {
+                          "properties": {
+                            "code": {
+                              "const": "not_found"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The channel is not verified, or the Idempotency-Key was used with another request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "common.v1.json#/components/schemas/Failed"
+                    },
+                    {
+                      "properties": {
+                        "error": {
+                          "properties": {
+                            "code": {
+                              "const": "conflict"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The instance reached its usage limit; the request did not reach the provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "common.v1.json#/components/schemas/Failed"
+                    },
+                    {
+                      "properties": {
+                        "error": {
+                          "properties": {
+                            "code": {
+                              "const": "rate_limited"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An unexpected failure, or a secret past its hard cache time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "common.v1.json#/components/schemas/Failed"
+                    },
+                    {
+                      "properties": {
+                        "error": {
+                          "properties": {
+                            "code": {
+                              "const": "internal"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Hermes is not ready, its database does not answer, or Hécate does not answer about a call key that Hermes does not have yet; it is worth retrying later.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "common.v1.json#/components/schemas/Failed"
+                    },
+                    {
+                      "properties": {
+                        "error": {
+                          "properties": {
+                            "code": {
+                              "const": "unavailable"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/capabilities": {
+      "get": {
+        "operationId": "getCapabilities",
+        "summary": "The service types, providers, functions and instances that Hermes offers, with the state of each instance.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The capabilities, without contacts or addresses.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "common.v1.json#/components/schemas/Completed"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Capabilities"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The client certificate or the short call token are not valid; the message never says which check failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "common.v1.json#/components/schemas/Failed"
+                    },
+                    {
+                      "properties": {
+                        "error": {
+                          "properties": {
+                            "code": {
+                              "const": "auth"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An unexpected failure, or a secret past its hard cache time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "common.v1.json#/components/schemas/Failed"
+                    },
+                    {
+                      "properties": {
+                        "error": {
+                          "properties": {
+                            "code": {
+                              "const": "internal"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Hermes is not ready, its database does not answer, or Hécate does not answer about a call key that Hermes does not have yet; it is worth retrying later.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "common.v1.json#/components/schemas/Failed"
+                    },
+                    {
+                      "properties": {
+                        "error": {
+                          "properties": {
+                            "code": {
+                              "const": "unavailable"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/instances/{name}/test": {
+      "post": {
+        "operationId": "testInstance",
+        "summary": "Check with the provider that the credentials of an instance work, and update its state.",
+        "description": "It changes nothing outside Hermes, so it takes no Idempotency-Key.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/InstanceName"
+          },
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result of the test, or the failure of the provider inside the envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "common.v1.json#/components/schemas/Completed"
+                        },
+                        {
+                          "properties": {
+                            "data": {
+                              "$ref": "#/components/schemas/InstanceTestResult"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "common.v1.json#/components/schemas/Failed"
+                        },
+                        {
+                          "properties": {
+                            "error": {
+                              "properties": {
+                                "code": {
+                                  "enum": ["provider_unavailable", "rate_limited", "timeout"]
+                                }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The name of the instance is not valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "common.v1.json#/components/schemas/Failed"
+                    },
+                    {
+                      "properties": {
+                        "error": {
+                          "properties": {
+                            "code": {
+                              "const": "validation"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The client certificate or the short call token are not valid; the message never says which check failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "common.v1.json#/components/schemas/Failed"
+                    },
+                    {
+                      "properties": {
+                        "error": {
+                          "properties": {
+                            "code": {
+                              "const": "auth"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The instance does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "common.v1.json#/components/schemas/Failed"
+                    },
+                    {
+                      "properties": {
+                        "error": {
+                          "properties": {
+                            "code": {
+                              "const": "not_found"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An unexpected failure, or a secret past its hard cache time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "common.v1.json#/components/schemas/Failed"
+                    },
+                    {
+                      "properties": {
+                        "error": {
+                          "properties": {
+                            "code": {
+                              "const": "internal"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Hermes is not ready, its database does not answer, or Hécate does not answer about a call key that Hermes does not have yet; it is worth retrying later.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "common.v1.json#/components/schemas/Failed"
+                    },
+                    {
+                      "properties": {
+                        "error": {
+                          "properties": {
+                            "code": {
+                              "const": "unavailable"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "mtls": {
+        "type": "mutualTLS",
+        "description": "The client certificate of a Cerbero component with its intermediate, presented to the TLS proxy, which forwards it in X-Forwarded-Client-Cert."
+      },
+      "callToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "A short call token (EdDSA, 300 s at most, single-use jti) signed by the caller, with iss equal to the SPIFFE ID of its certificate and aud equal to the SPIFFE ID of Hermes. It may carry cerbero_audit: an object of up to 16 text keys (1 to 64 characters) with text values (up to 256), 2 KiB at most."
+      }
+    },
+    "parameters": {
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/IdempotencyKey"
+        }
+      },
+      "RequestId": {
+        "name": "X-Request-Id",
+        "in": "header",
+        "required": false,
+        "schema": {
+          "$ref": "common.v1.json#/components/schemas/RequestId"
+        }
+      },
+      "InstanceName": {
+        "name": "name",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/Name"
+        }
+      }
+    },
+    "schemas": {
+      "Name": {
+        "description": "The name of a contact, an instance, a template or a variable.",
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{0,62}$"
+      },
+      "IdempotencyKey": {
+        "description": "From 1 to 128 printable ASCII characters.",
+        "type": "string",
+        "pattern": "^[\\x20-\\x7e]{1,128}$"
+      },
+      "Instant": {
+        "description": "A UTC instant with microseconds.",
+        "type": "string",
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+      },
+      "InstanceStatus": {
+        "enum": ["healthy", "degraded", "unavailable"]
+      },
+      "TemplateRef": {
+        "description": "A template and, optionally, one of its versions.",
+        "type": "object",
+        "required": ["id"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Name"
+          },
+          "version": {
+            "description": "Without it, the latest version.",
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "SendMessageRequest": {
+        "description": "The common contract of chat.send_message.",
+        "type": "object",
+        "required": ["recipients", "template", "data"],
+        "additionalProperties": false,
+        "properties": {
+          "recipients": {
+            "description": "Exactly one contact per request.",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/Name"
+            }
+          },
+          "template": {
+            "$ref": "#/components/schemas/TemplateRef"
+          },
+          "data": {
+            "description": "An object that fits the data schema of the template version.",
+            "type": "object"
+          },
+          "instance": {
+            "$ref": "#/components/schemas/Name",
+            "description": "Optional; without it, the only chat channel of the contact."
+          }
+        }
+      },
+      "SendMessageResult": {
+        "description": "The result of a message sent; it never carries the address of the contact.",
+        "type": "object",
+        "required": ["recipient", "instance", "provider_message_ref", "sent_at", "truncated"],
+        "additionalProperties": false,
+        "properties": {
+          "recipient": {
+            "$ref": "#/components/schemas/Name"
+          },
+          "instance": {
+            "$ref": "#/components/schemas/Name"
+          },
+          "provider_message_ref": {
+            "description": "The reference of the message in the provider: in Telegram, its message_id.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "sent_at": {
+            "$ref": "#/components/schemas/Instant"
+          },
+          "truncated": {
+            "description": "Whether the detail was cut to fit the provider.",
+            "type": "boolean"
+          }
+        }
+      },
+      "FunctionCapabilities": {
+        "type": "object",
+        "required": ["name", "kind", "mode", "timeout_s"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "$ref": "#/components/schemas/Name"
+          },
+          "kind": {
+            "enum": ["query", "command"]
+          },
+          "mode": {
+            "enum": ["sync", "task"]
+          },
+          "timeout_s": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "InstanceState": {
+        "type": "object",
+        "required": ["name", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "$ref": "#/components/schemas/Name"
+          },
+          "status": {
+            "$ref": "#/components/schemas/InstanceStatus"
+          }
+        }
+      },
+      "ProviderCapabilities": {
+        "type": "object",
+        "required": ["provider", "version", "functions", "instances"],
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "$ref": "#/components/schemas/Name"
+          },
+          "version": {
+            "type": "string",
+            "pattern": "^\\d+\\.\\d+\\.\\d+$"
+          },
+          "functions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FunctionCapabilities"
+            }
+          },
+          "instances": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InstanceState"
+            }
+          }
+        }
+      },
+      "ServiceCapabilities": {
+        "type": "object",
+        "required": ["category", "service", "contract", "providers"],
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "$ref": "#/components/schemas/Name"
+          },
+          "service": {
+            "$ref": "#/components/schemas/Name"
+          },
+          "contract": {
+            "type": "string",
+            "pattern": "^v\\d+$"
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderCapabilities"
+            }
+          }
+        }
+      },
+      "Capabilities": {
+        "description": "What Hermes offers, without contacts or addresses.",
+        "type": "object",
+        "required": ["component", "services"],
+        "additionalProperties": false,
+        "properties": {
+          "component": {
+            "const": "hermes"
+          },
+          "services": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServiceCapabilities"
+            }
+          }
+        }
+      },
+      "InstanceTestResult": {
+        "type": "object",
+        "required": ["instance", "status", "checked_at"],
+        "additionalProperties": false,
+        "properties": {
+          "instance": {
+            "$ref": "#/components/schemas/Name"
+          },
+          "status": {
+            "$ref": "#/components/schemas/InstanceStatus"
+          },
+          "checked_at": {
+            "$ref": "#/components/schemas/Instant"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "provider": "fake",
+  "version": "1.0.0",
+  "implements": [
+    {
+      "service": "chat",
+      "contract": "1",
+      "functions": {
+        "send_message": {
+          "kind": "command",
+          "mode": "sync",
+          "timeout": "10s"
+        }
+      }
+    }
+  ],
+  "capabilities": {
+    "max_length": 4096,
+    "formats": [
+      "text"
+    ]
+  },
+  "limits": {
+    "requests_per_minute": 600
+  },
+  "permissions": [],
+  "instance_config": {}
+}

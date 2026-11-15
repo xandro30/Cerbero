@@ -7,7 +7,23 @@ authors = [
     { name = "Alejandro Anguita", email = "anguitaalex@gmail.com" }
 ]
 requires-python = ">=3.15"
-dependencies = []
+dependencies = [
+    "alembic>=1.20.1",
+    "cerbero-contracts",
+    "cryptography>=50.0.2",
+    "fastapi>=0.162.7",
+    "httpx>=0.28.1",
+    "jsonschema>=4.26.0",
+    "psycopg[binary,pool]>=3.3.9",
+    "pydantic>=2.14.3",
+    "pyjwt>=2.15.1",
+    "pyyaml>=6.0.3",
+    "sqlalchemy[asyncio]>=2.1.8",
+    "uvicorn>=0.54.0",
+]
+
+[project.scripts]
+hermes = "hermes.infrastructure.admin.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.13.1,<0.14.0"]
@@ -15,3 +31,45 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-name = "hermes"
+
+[tool.uv.sources]
+cerbero-contracts = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "anyio>=4.16.0",
+    "hypothesis>=6.170.15",
+    "mypy>=2.4.1",
+    "pip-audit>=2.10.1",
+    "pytest>=9.2.0",
+    "respx>=0.23.1",
+    "ruff>=0.17.5",
+    "testcontainers[postgres]>=4.15.0",
+    "types-jsonschema>=4.26.0.20261006",
+    "types-pyyaml>=6.0.12.20261113",
+]
+
+[tool.ruff]
+line-length = 120
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF", "ASYNC"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106"]
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+mypy_path = "src"
+packages = ["hermes"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+addopts = ["-ra", "--strict-markers", "--import-mode=importlib"]
+markers = [
+    "docker: necesita Docker (testcontainers o docker compose)",
+    "hecate: necesita el binario de Hécate en HECATE_BIN",
+]

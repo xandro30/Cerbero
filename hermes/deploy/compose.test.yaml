@@ -1,0 +1,15 @@
+# Para el E2E (T105), sobre compose.yaml: el proveedor fake, con sus bandejas en el directorio del usuario de Hermes, y
+# otros puertos en el anfitrión para no chocar con un entorno del quickstart en marcha.
+services:
+  hecate:
+    ports: !override
+      - "127.0.0.1:18443:8443"
+
+  hermes:
+    environment:
+      HERMES_FAKE_PROVIDERS: enabled
+      HERMES_FAKE_DIR: /home/hermes/fake
+
+  envoy:
+    ports: !override
+      - "127.0.0.1:19443:8443"

@@ -247,6 +247,7 @@ El código y la documentación se escriben con la ayuda de [Claude Code](https:/
 - [x] Diseño conceptual de **Hécate** (secretos, claves, identidad de los proyectos, auditoría).
 - [x] Documentación por componente en `docs/`.
 - [x] **Hécate** construida en Rust: sellado, secretos, identidades (CA en dos niveles, alta, renovación única y revocación), Access Policy y resolución de secretos por la API mTLS ([docs/hecate.md](docs/hecate.md)). Lo diseñado y sin construir está en [DECISIONS](DECISIONS.md#abiertas).
+- [x] **Hermes** construido en Python: su API detrás de Envoy con la identidad de Hécate, la configuración en su base aplicada con su CLI y la verificación de canales con un código, idempotencia, reintentos seguros, límites de uso, capacidades y salud, y `chat.send_message` con Telegram ([docs/hermes.md](docs/hermes.md)). Lo diseñado y sin construir está en [DECISIONS](DECISIONS.md#abiertas).
 
 Lo pendiente de diseño (Echidna, esquema UDM) está en [DECISIONS](DECISIONS.md#abiertas).
 

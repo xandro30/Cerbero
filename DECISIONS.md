@@ -94,7 +94,7 @@ No hay más desviaciones de lenguaje. Se descartaron `by <d>` (tumbling: se cubr
 | Desbloqueo con la frase del admin y Shamir 2 de 3 solo para recuperar (OpenBao: Shamir o auto-unseal) | Reinicios cómodos en casa sin perder la raíz si se olvida la frase. |
 | Certificados de componente de 3 días (step-ca: 24 h por defecto) | Aguantar que Hécate esté sellada un tiempo sin que caigan todas las identidades; la revocación pasiva sigue acotada a días. |
 | Identidad en formato SPIFFE emitida por la CA de Hécate, sin SPIRE | Mismo formato estándar sin otro sistema que operar; las identidades hijas cubren el caso de las integraciones. |
-| JWT ligado al canal mTLS (SPIFFE desaconseja los JWT-SVID por *replay*) | El JWT lleva permisos y contexto de auditoría, y exigir que `iss` coincida con el certificado de la conexión evita su reutilización desde otro componente. |
+| JWT ligado al canal mTLS (SPIFFE desaconseja los JWT-SVID por *replay*) | El JWT lleva el contexto de auditoría, sin permisos ([ADR 0013](docs/adr/0013-acceso-por-app.md)), y exigir que `iss` coincida con el certificado de la conexión evita su reutilización desde otro componente. |
 | Hécate firma los checkpoints de auditoría de todo Cerbero | Un componente comprometido no puede reescribir su historia ya firmada: el no repudio queda respaldado criptográficamente, no solo por el registro append-only. |
 | Cada certificado se renueva una sola vez, y un segundo intento revoca con urgencia los de esa identidad (step-ca renueva mientras el certificado sea válido) | Un segundo intento con un certificado ya renovado solo lo hace quien tiene una copia de su clave: se trata como un robo y corta todas las identidades de ese componente. |
 | Las claves de firma de llamadas solo se publican a componentes autenticados, sin un JWKS público | Nada fuera de Cerbero necesita verificar sus llamadas, y así la lista no revela qué componentes existen. |
@@ -121,6 +121,8 @@ No hay más desviaciones de lenguaje. Se descartaron `by <d>` (tumbling: se cubr
 | La raíz está en memoria mientras Hécate está desbloqueada; los secretos de paso se borran al terminar cada operación, pero pueden quedar copias que el proceso no controla (al moverse los datos, dentro de las librerías y en los búferes del sistema) | Se mitiga más adelante con el adapter de hardware. |
 | Ninguna implementación de Shamir tiene una auditoría pública confirmada, tampoco vsss-rs, la que usa Hécate ([ADR 0007](docs/adr/0007-pila-hecate-rust.md)) | Shamir solo protege la clave de recuperación; el algoritmo es pequeño y revisable, y lo cubren pruebas: cualquier pareja de partes reconstruye la clave y una sola parte no revela nada. |
 | La clave propia de Hécate se guarda en claro (`hecate_tls`): se lee sin desbloquear, también desde las copias, y vale mientras su certificado no caduque ni se revoque | Permite responder a los componentes, con su certificado vigente, que Hécate está sellada. Lo acotan los certificados de 3 días y la revocación urgente, que lo reemite al momento con otra clave. |
+| Hermes liga el token corto a la identidad que declara su proxy, Envoy, en `X-Forwarded-Client-Cert`: quien llegara a su socket sin pasar por Envoy podría declarar otra | Hermes no escucha en ningún puerto: su API es un socket Unix 0600 del usuario que comparte con Envoy, y Envoy sustituye la cabecera que traiga la petición ([ADR 0011](docs/adr/0011-pila-hermes.md)). |
+| Los secretos que resuelve Hermes viven en la memoria de un proceso Python, que no puede borrarlos: las cadenas son inmutables y el recolector decide cuándo libera | Nunca van a disco ni a los logs, la caché los acota (se refrescan a los 5 minutos y caducan a la hora) y Hermes sigue en Python ([ADR 0005](docs/adr/0005-rust-para-orthros-y-hecate.md)). |
 
 ---
 
@@ -139,6 +141,9 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 | Permiso adicional de enlace con OpenSSL y sus derivadas en la AGPL | [0008](docs/adr/0008-excepcion-openssl-agpl.md) |
 | API mTLS de Hécate: axum, rustls, rcgen, jsonwebtoken, CRL X.509 y OpenAPI en JSON | [0009](docs/adr/0009-pila-api-hecate.md) |
 | Access Policy de Hécate: regla por defecto, excepciones por secreto concreto, permiso de estado y rechazos que no se distinguen | [0010](docs/adr/0010-access-policy-hecate.md) |
+| APIs internas en Python y certificado del cliente: Hermes detrás de Envoy, que reenvía el certificado del cliente; FastAPI, SQLAlchemy Core con Alembic y httpx | [0011](docs/adr/0011-pila-hermes.md) |
+| Persistencia de las apps: un PostgreSQL común, con una base y un usuario por app; Hécate sigue en SQLite | [0012](docs/adr/0012-persistencia-postgresql-comun.md) |
+| Acceso por app: Hécate guarda qué identidades pueden llamar a cada app; el token corto no concede acceso | [0013](docs/adr/0013-acceso-por-app.md) |
 
 ---
 
@@ -149,7 +154,7 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 | Broker / bus de eventos | Debe correr en el home lab y soportar consumo con reentrega y relectura del flujo. |
 | Formato y distribución del esquema UDM | Formato del esquema y cómo se publica como artefacto versionado. |
 | Infraestructura de observabilidad | Decidido: OpenTelemetry para trazas y métricas y logs estructurados a stdout en todos los componentes. Falta el colector, el backend y el almacenamiento. |
-| Persistencia por proyecto | Hécate: SQLite ([ADR 0003](docs/adr/0003-persistencia-hecate-sqlite.md)). Falta: event store de Hades, almacenamiento y búsqueda de Estigia, buffer de las cabezas. |
+| Persistencia por proyecto | Hécate: SQLite ([ADR 0003](docs/adr/0003-persistencia-hecate-sqlite.md)); las demás apps, un PostgreSQL común con una base por app ([ADR 0012](docs/adr/0012-persistencia-postgresql-comun.md)); el buffer de cada cabeza vive en la cabeza. Falta: el event store de Hades y el almacenamiento y la búsqueda de Estigia. |
 | Dueño del contrato de Alert | Caronte lo publica; falta decidir dónde se define y versiona. |
 | Motor de YARA-L | Implementación del parser y evaluador de YARA-L en Caronte. |
 | Temporizadores de las bombas | Bus con entrega diferida o servicio de tareas. Debe vivir fuera de Caronte. |
@@ -158,7 +163,6 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 | Límite inclusivo del pivote | La documentación de SecOps no aclara si `over <d> after $pivot` incluye el instante del pivote. Se asume que sí. |
 | Coche escoba en Caronte | Diseñado, no implementado: relanzar evaluaciones fallidas o incompletas, apoyado en los IDs deterministas. |
 | Event Sourcing de entidades en Estigia | Permitiría recalcular la entity resolution si cambia el algoritmo. |
-| APIs internas en Python y certificado del cliente | uvicorn no pasa a la aplicación el certificado del cliente, que el receptor necesita para ligar el token corto al canal. Hermes, y cualquier servicio en Python con API, lo resuelve en su ADR: aiohttp, uvicorn adaptado o un proxy TLS delante. |
 | Formato declarativo de Parsers, Filters y Aggregations | Interpretable por el motor genérico de Eurytion y versionable dentro de la Policy. Referencia: parsers CBN de SecOps. |
 | Protocolo de distribución de Policies | Pull en heartbeat. Referencia: OpAMP (OpenTelemetry). |
 | Mecanismo de firma de Policies e identidad de Eurytion | Ligado al enrollment. Puede seguir el patrón de identidades de Hécate (alta con token y, si hace falta, identidades hijas). |
@@ -185,11 +189,13 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 | Lote de tasks | Un Playbook lanza tasks y otro las recoge con sus `handle`, para que los Playbooks terminen antes. Idea abierta. |
 | `endpoint_control` | Categoría para actuar sobre dispositivos de la red (aislar un equipo, matar un proceso); el proveedor podría ser Orthros. Idea abierta. |
 | Ténaro | Backend orquestador para la UI (*backend for frontend*), desde donde se gestionan los componentes. |
-| Repositorio privado de lo propio | Decidido: un repositorio privado común, separado por ruta (`hades/`, `hermes/`), que se edita desde Ténaro con PRs; lo oficial vive en el repositorio de Cerbero. Nunca van al repositorio secretos, contactos ni valores de variables: viven en la base de datos de la app que corresponda (Hades para los Playbooks e integraciones, Hermes para contactos y plantillas). Falta: si contactos y variables se guardan cifrados; la estructura de carpetas de cada ruta, la batería de pruebas de las PRs (hoy no existe) y cómo llegan los cambios fusionados a Hades y Hermes. |
+| Repositorio privado de lo propio | Decidido: un repositorio privado común, separado por ruta (`hades/`, `hermes/`), que se edita desde Ténaro con PRs; lo oficial vive en el repositorio de Cerbero. En Hermes guarda solo las librerías propias: sus instancias, plantillas, variables y contactos viven en su base y los aplica el admin con su CLI. Nunca van al repositorio secretos, contactos ni valores de variables. Falta: si contactos y variables se guardan cifrados; la estructura de carpetas de cada ruta, la batería de pruebas de las PRs (hoy no existe) y cómo llegan los cambios fusionados a Hades y Hermes. |
 | Política común de copias de seguridad | Regla 3-2-1, cifrado y restauración probada para todos los almacenes de Cerbero. |
-| Despliegue en el home lab | Cómo corren los componentes en el servidor de casa: gestor de servicios o contenedores, el usuario de cada uno y su arranque. Común a todos los componentes; lo que Hécate necesita del sistema para arrancar está en su [CLI](docs/hecate/cli.md#lo-que-necesita-del-sistema). |
-| Detalle de contratos y versionado de Hermes | JSON Schema y OpenAPI 3.1, major en la ruta: el detalle, al implementar. |
-| `chat.ask` | Clasificación (consulta con `side_effect`) y comportamiento con cada proveedor, a ajustar al implementar; texto libre más adelante. |
+| Despliegue en el home lab | Cómo corren los componentes en el servidor de casa: gestor de servicios o contenedores, el usuario de cada uno y su arranque. Común a todos los componentes; lo que Hécate necesita del sistema para arrancar está en su [CLI](docs/hecate/cli.md#lo-que-necesita-del-sistema), y Hermes necesita Envoy delante y el PostgreSQL común ([ADR 0011](docs/adr/0011-pila-hermes.md)); el compose de `hermes/deploy/` es solo el entorno de pruebas. |
+| `chat.ask` | Diseñado, no implementado: preguntar con opciones cerradas a uno o varios contactos y que gane la primera respuesta válida, como task; falta su clasificación (consulta con `side_effect`) y el comportamiento con cada proveedor, y el texto libre ([hermes](docs/hermes.md#comunicación-contactos-y-plantillas)). |
+| Tasks de Hermes | Diseñado, no implementado: peticiones asíncronas event-sourced que Hades envía, consulta y cancela por API, con su cola sobre la base de Hermes; las necesitan `chat.ask` y las funciones en modo task ([hermes](docs/hermes.md#task)). |
+| Grupos de contactos | Diseñado, no implementado: un grupo con miembros y entrega `shared_chat` o `fan_out`; hoy `chat.send_message` va a un solo contacto por petición, y el contrato ya recibe una lista ([hermes](docs/hermes.md#instancia-contacto-y-configuración)). |
+| Acceso por app | Decidido ([ADR 0013](docs/adr/0013-acceso-por-app.md)); diseñado, no implementado: la lista de Hécate de qué identidades pueden llamar a cada app y su consulta desde cada app las construye la 009. Hoy Hermes autentica a quien llama y no comprueba el acceso. |
 | Permisos por rol | Hoy hay un único rol privilegiado, el admin (Hécate, identidades, invitaciones); owner y maintainer salen de las definiciones. Falta la capa de permisos para el resto. |
 | `signal` en otros destinos | Solo `hades.signal` tiene uso; en los demás, cuando su contrato publique señales. |
 | Adapter de hardware de Hécate | TPM o YubiKey detrás del `CryptoProvider`: desbloqueo automático y claves que no salen del dispositivo. |
@@ -201,6 +207,7 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 | Permisos que salen de las declaraciones | Diseñado, no implementado: las referencias `secret://` de una instancia de Hermes o de una integración de Hades dan permiso de lectura a su identidad al registrarla; lo necesitan Hermes y Hades ([acceso](docs/hecate/acceso.md#los-permisos-que-salen-de-las-declaraciones)). |
 | Rotación de la raíz y de las claves de ámbito | Diseñado, no implementado: rotar la raíz a petición del admin, y cada clave de ámbito periódicamente y a mano, volviendo a envolver lo que cifran sin tocar los secretos; lo necesita la respuesta a una clave de ámbito comprometida ([secretos](docs/hecate/secretos.md#rotar-una-clave-de-ámbito), [operación](docs/hecate/operacion.md#clave-de-ámbito-comprometida)). |
 | Gestión y desbloqueo de Hécate desde Ténaro | Diseñado, no implementado: que el admin gestione Hécate (secretos, Access Policy, identidades, rotaciones) y la desbloquee desde Ténaro, con su passkey y por mTLS, y que Ténaro muestre su estado; lo necesita Ténaro ([sellado](docs/hecate/sellado.md#desbloquear)). |
+| Gestión de Hermes desde Ténaro | Idea del propietario: que el admin gestione desde Ténaro la configuración de Hermes (instancias, plantillas, variables y contactos) y los códigos de verificación. Hoy los aplica con la CLI de Hermes por su canal local, sin superficie de red. |
 | Relación Entidades ↔ Cases | Explorar Cases a través de las entidades que comparten, al estilo de una base de grafos. Idea sin decidir. |
 
 ---

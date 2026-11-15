@@ -1,0 +1,15 @@
+{
+  "status": 200,
+  "body": {
+    "ok": true,
+    "result": {
+      "id": 7000000001,
+      "is_bot": true,
+      "first_name": "Cerbero",
+      "username": "cerbero_family_bot",
+      "can_join_groups": false,
+      "can_read_all_group_messages": false,
+      "supports_inline_queries": false
+    }
+  }
+}

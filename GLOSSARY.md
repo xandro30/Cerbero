@@ -60,7 +60,7 @@ Ver también: [README](README.md) · [ARCHITECTURE](ARCHITECTURE.md)
 | **Side Effect** | Hades, Hermes | Lo que un bloque o una función cambia fuera (una fila de Data Table, un trust level, un dispositivo bloqueado, un ticket), frente a lo que solo lee. En el contrato se describe con la entrada, p. ej. "Bloquea la URL `${input.url}` en el proxy". |
 | **Discloses Data** | Hermes, Hades | Marca descriptiva de una función que envía a un tercero datos que dejan de ser privados (p. ej. una URL a un análisis público). No cambia nada, pero el dato sale de casa. |
 | **Compensation** | Hades | Acción inversa que un bloque con side effect declara para deshacerlo. Algunos efectos no son reversibles. |
-| **Idempotency Key** | Hades, Estigia, Hermes | `response_id + paso + hash(input resuelto)`. Quien ejecuta el efecto la comprueba para no repetirlo en un reintento. |
+| **Idempotency Key** | Hades, Estigia, Hermes | `response_id + paso + hash(input resuelto)`. Quien ejecuta el efecto la comprueba para no repetirlo en un reintento. En Hermes, la misma clave con el mismo cuerpo devuelve la misma respuesta, y con otro cuerpo, `conflict`. |
 | **Non-repudiation** | Hades | Atribución de todo cambio: al sistema y al owner / maintainer del Playbook o Job en una ejecución automática, a la persona en una acción humana. |
 | **Job / Cronjob** | Hades | Código de una integración que se ejecuta fuera de los Playbooks, a mano o por un evento; el cronjob, por calendario. Declara sus entradas y sus side effects. |
 | **Source** | Hades, Estigia | Origen de un cambio: `response`, `job`, `cronjob` u `owner`, con su id. |
@@ -81,14 +81,16 @@ Ver también: [README](README.md) · [ARCHITECTURE](ARCHITECTURE.md)
 | **Function** | Hermes | Operación de un tipo de servicio (p. ej. `chat.ask`, `threat_intel.ip_reputation`): consulta o cambio, modo nativo (síncrona o task) y schemas. |
 | **Provider Library** | Hermes | Librería que implementa uno o varios tipos de servicio para un proveedor (adapter), con su manifiesto, su contrato de proveedor y su versión propia. |
 | **Instance** | Hermes | Librería de proveedor configurada (parámetros y referencias a secretos). Puede haber varias por proveedor. |
-| **Capabilities** | Hermes, todos | `GET /capabilities`: qué funciones, proveedores e instancias ofrece un componente y en qué estado. Se usa para validar al registrar. |
+| **Capabilities** | Hermes, todos | `GET /v1/capabilities`: qué funciones, proveedores e instancias ofrece un componente y en qué estado. Se usa para validar al registrar. |
 | **Task** | Hermes | Petición asíncrona en curso, event-sourced (`accepted → running → completed / failed / timeout / cancelled`). Su estado se consulta por API, nunca escuchando su stream. |
 | **Notification** | Hermes | Mensaje enviado por un canal de comunicación (chat, email, ticketing) mediante una función de su tipo de servicio. |
 | **Message Model** | Hermes | Formato neutral de un mensaje (título, severidad, resumen, datos, acciones hechas, qué se espera, enlace al Case), que rellenan las plantillas y dibuja cada proveedor. |
 | **Contact** | Hermes, Hades | Persona o grupo con sus canales verificados y direcciones. Hades solo maneja referencias; el directorio es de Hermes. |
+| **Configuration** (Hermes) | Hermes | Instancias, plantillas, variables y contactos de Hermes, en su base de datos. El admin la aplica entera desde un fichero con la CLI de Hermes, que enseña los cambios antes de escribirlos en una sola transacción, y la vuelve a sacar sin secretos ni direcciones. |
+| **Template Variable** | Hermes | Valor de la configuración de Hermes que las plantillas usan con `${vars.<nombre>}`, como la URL de la consola en el enlace del mensaje. |
 | **mTLS** | Todos | TLS mutuo: cliente y servidor se identifican con certificados. Da identidad y cifra el canal entre componentes, con certificados de corta duración de una CA interna. |
 | **CA interna** | Todos | Autoridad de certificados propia de Cerbero que emite los certificados de los componentes. |
-| **JWT** | Todos | Token corto firmado por quien llama, con permisos y contexto de auditoría. El receptor lo verifica con la clave de firma de llamadas del emisor. |
+| **JWT** | Todos | Token corto firmado por quien llama, con el contexto de auditoría si lo pone (`cerbero_audit`) y sin permisos: no concede acceso. El receptor lo verifica con la clave de firma de llamadas del emisor. |
 | **Call Signing Key** | Todos, Hécate | Clave de firma de llamadas: clave Ed25519 de un componente, distinta de la de su certificado, con la que firma sus tokens cortos. Se registra en el alta y en cada renovación; Hécate la publica, solo a componentes autenticados, mientras su certificado es válido y su identidad está habilitada, y la conserva para verificar firmas pasadas. |
 | **Admin** | Ténaro, Hécate | Único usuario privilegiado: inicializa, desbloquea y sella Hécate, gestiona secretos, identidades y tokens de alta, invita a las personas y tiene códigos de recuperación. No confundir con el owner / maintainer de una definición. |
 | **Passkey** (WebAuthn) | Ténaro | Credencial sin contraseña, resistente al phishing, con la que una persona entra en Ténaro; el servidor solo guarda la clave pública. |

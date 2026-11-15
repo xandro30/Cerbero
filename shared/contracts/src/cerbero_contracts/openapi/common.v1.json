@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Cerbero common envelope",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "summary": "The response envelope and the closed error codes shared by every API between Cerbero components.",
     "description": "Each API between components answers with this envelope and these codes. The HTTP status of each code is fixed by the contract of each API: Hermes, for example, returns the failures of its providers inside the envelope.",
     "license": {
@@ -95,6 +95,21 @@
           "duration_ms": {
             "type": "integer",
             "minimum": 0
+          },
+          "service": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,62}$",
+            "description": "Optional: the service type of the operation, for example chat in Hermes."
+          },
+          "provider": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,62}$",
+            "description": "Optional: the provider behind the operation, for example telegram in Hermes."
+          },
+          "idempotency_key": {
+            "type": "string",
+            "pattern": "^[\\x20-\\x7e]{1,128}$",
+            "description": "Optional: the Idempotency-Key of the request, when it carries one."
           }
         }
       },
