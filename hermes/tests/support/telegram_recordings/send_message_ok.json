@@ -1,0 +1,22 @@
+{
+  "status": 200,
+  "body": {
+    "ok": true,
+    "result": {
+      "message_id": 4521,
+      "from": {
+        "id": 7000000001,
+        "is_bot": true,
+        "first_name": "Cerbero",
+        "username": "cerbero_test_bot"
+      },
+      "chat": {
+        "id": 987654321,
+        "first_name": "Demo",
+        "type": "private"
+      },
+      "date": 1794650400,
+      "text": "Dispositivo desconocido en la red"
+    }
+  }
+}

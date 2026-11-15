@@ -1,0 +1,91 @@
+# Entorno de pruebas de Hermes (research R21): el del E2E y el quickstart. No fija cómo corre en el home lab.
+name: cerbero-hermes-test
+
+services:
+  postgres:
+    image: postgres:18.7-trixie
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_admin_password
+    secrets:
+      - postgres_admin_password
+      - postgres_hermes_password
+    volumes:
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  hecate:
+    build:
+      context: ../..
+      dockerfile: hermes/deploy/hecate/Dockerfile
+    image: cerbero-hecate-test:latest
+    environment:
+      HECATE_DATA_DIR: /var/lib/hecate
+      HECATE_API_ADDR: 0.0.0.0:8443
+      HECATE_KDF_PROFILE: moderate
+    ulimits:
+      memlock: -1
+    ports:
+      - "127.0.0.1:8443:8443"
+    volumes:
+      - hecate-data:/var/lib/hecate
+
+  hermes:
+    build:
+      context: ../..
+      dockerfile: hermes/Dockerfile
+    image: cerbero-hermes-test:latest
+    user: "10001:10001"
+    environment:
+      HERMES_STATE_DIR: /var/lib/hermes/state
+      HERMES_PROXY_DIR: /var/lib/hermes/proxy
+      HERMES_RUN_DIR: /run/hermes
+      HERMES_ADMIN_DIR: /run/hermes-admin
+      HERMES_HECATE_URL: https://hecate:8443
+      HERMES_DATABASE_URL: postgresql+psycopg://hermes@postgres:5432/hermes
+      HERMES_DATABASE_PASSWORD_REF: secret://hermes/postgres/password
+    volumes:
+      - hermes-state:/var/lib/hermes/state
+      - hermes-proxy:/var/lib/hermes/proxy
+      - hermes-run:/run/hermes
+    healthcheck:
+      test: ["CMD", "hermes", "health", "--live"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    depends_on:
+      postgres:
+        condition: service_healthy
+      hecate:
+        condition: service_started
+
+  envoy:
+    image: envoyproxy/envoy:v1.40.2
+    user: "10001:10001"
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml"]
+    ports:
+      - "127.0.0.1:9443:8443"
+    volumes:
+      - ./envoy:/etc/envoy:ro
+      - hermes-proxy:/var/lib/hermes/proxy:ro
+      - hermes-run:/run/hermes
+    depends_on:
+      hermes:
+        condition: service_healthy
+
+secrets:
+  postgres_admin_password:
+    file: ./.secrets/postgres_admin_password
+  postgres_hermes_password:
+    file: ./.secrets/postgres_hermes_password
+
+volumes:
+  postgres-data:
+  hecate-data:
+  hermes-state:
+  hermes-proxy:
+  hermes-run:

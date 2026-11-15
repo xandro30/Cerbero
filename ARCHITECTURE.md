@@ -101,6 +101,8 @@ El esquema UDM es el contrato del que dependen todos sus productores y consumido
 
 Regla de dependencia: `infrastructure → application → domain`. El dominio no conoce brokers, bases de datos ni protocolos.
 
+**Persistencia:** cada componente guarda sus datos sin compartir su modelo. Hécate, en SQLite ([ADR 0003](docs/adr/0003-persistencia-hecate-sqlite.md)); las demás apps, en un PostgreSQL común, con una base y un usuario propios por app y sin acceso a las bases de las demás, y la contraseña de cada usuario es un secreto de esa app en Hécate ([ADR 0012](docs/adr/0012-persistencia-postgresql-comun.md)); el buffer de las cabezas, en cada cabeza.
+
 ### Intensidad de patrones
 
 | Proyecto | Naturaleza | DDD táctico | CQRS | Event Sourcing |
@@ -184,7 +186,8 @@ Detalle completo en [docs/hermes.md](docs/hermes.md).
 - **Qué hace:** reúne las librerías que envuelven servicios de terceros detrás de contratos estándar por tipología (categoría → tipo de servicio → función → proveedor → instancia). Un Playbook que usa el contrato del tipo de servicio funciona con cualquier proveedor.
 - **Contratos en tres capas,** todas de Hermes: sobre común (con errores cerrados y `retryable`), contrato del tipo de servicio y contrato del proveedor. Cada función declara si es consulta o cambio, su modo nativo (síncrona o task), `side_effect` y `discloses_data`.
 - **Ejecución:** llamadas síncronas y tasks event-sourced que Hades consulta por API; idempotencia por `Idempotency-Key`, reintentos solo cuando es seguro, polling hacia los proveedores.
-- **Librerías de proveedor** como código de Hermes (manifiesto, contrato, adapter, polling, pruebas de conformidad). Lo propio (instancias, plantillas y librerías propias) vive en un repositorio privado y se edita desde Ténaro con una PR; los contactos y los valores de las variables, en la base de datos de Hermes.
+- **Librerías de proveedor** como código de Hermes (manifiesto, contrato, adapter, polling, pruebas de conformidad); las propias, en un repositorio privado. Su configuración (instancias, plantillas, variables y contactos) vive en su base de datos y la aplica el admin con la CLI de Hermes, por un canal local; los secretos, en Hécate.
+- **Superficies:** su API va detrás de un proxy TLS (Envoy) que termina el mTLS y le reenvía el certificado del cliente por un socket Unix, sin puerto propio; la gestión y la salud van por el canal local.
 - **Frontera:** no orquesta ni avisa a nadie; es lo recomendado para integrar un tercero, no un paso obligatorio.
 
 ---
@@ -227,8 +230,9 @@ Común a todo Cerbero. La CA y las claves las gestiona Hécate.
 ### Llamadas entre componentes
 
 - **mTLS** con los certificados anteriores: identidad y canal cifrado.
-- **JWT corto firmado por quien llama** con su propia clave de firma de llamadas (Ed25519, distinta de la del TLS), que registra en el alta y Hécate publica para los componentes autenticados. Lleva `iss`, `aud`, `exp` de minutos, `jti`, permisos (por tipo de servicio y operación) y el contexto de auditoría (`source`, Response, Playbook o Job, owner / maintainer o la persona).
-- **Ligado al canal:** el receptor exige que `iss` coincida con la identidad del certificado mTLS; un JWT robado no sirve desde otro componente.
+- **JWT corto firmado por quien llama** con su propia clave de firma de llamadas (Ed25519, distinta de la del TLS), que registra en el alta y Hécate publica para los componentes autenticados. Lleva `iss`, `aud`, `exp` de minutos, `jti` y, si quien llama lo pone, el contexto de auditoría en `cerbero_audit` (`source`, Response, Playbook o Job, owner / maintainer o la persona). No lleva permisos: lo firma quien llama, así que no concede nada.
+- **Acceso por app:** Hécate guarda qué identidades pueden llamar a cada app, a la app entera y sin permisos por función ([ADR 0013](docs/adr/0013-acceso-por-app.md)).
+- **Ligado al canal:** el receptor exige que `iss` coincida con la identidad del certificado mTLS; un JWT robado no sirve desde otro componente. Un servicio en Python la toma del certificado que le reenvía su proxy TLS ([ADR 0011](docs/adr/0011-pila-hermes.md)).
 - **No repudio firmado:** cada cambio queda atribuido criptográficamente a quien lo pidió (ver la [auditoría de Hécate](docs/hecate/auditoria.md#la-firma-de-checkpoints)).
 
 ### Personas
@@ -260,5 +264,5 @@ Común a todo Cerbero. La CA y las claves las gestiona Hécate.
 | Caronte | Los eventos se acumulan en el río sin evaluar; las bombas que vencen esperan en el servicio de temporizadores | Caronte consume lo pendiente al volver, incluidas las bombas vencidas |
 | Hades | Las Alerts se acumulan sin atender | Hades procesa las pendientes al volver; cada Response se reanuda desde su stream |
 | Hermes | Hades no puede llamar a los servicios con contrato: el bloque falla y se reintenta según el Playbook. Las tasks ya aceptadas no se pierden | Hermes retoma las tasks no terminales desde su event store |
-| Un proveedor de Hermes | Hermes reintenta lo seguro; si no, devuelve `provider_unavailable`, `rate_limited` o `timeout` | El estado de la instancia lo refleja en `/capabilities` |
+| Un proveedor de Hermes | Hermes reintenta lo seguro; si no, devuelve `provider_unavailable`, `rate_limited` o `timeout` | El estado de la instancia lo refleja en `/v1/capabilities` |
 | Hécate | Los componentes siguen con la caché de secretos hasta 1 h; después, lo que necesita un secreto falla. Las identidades aguantan hasta 3 días sin renovar | Arrancar y desbloquear (Ténaro o CLI local); [procedimientos escritos](docs/hecate/operacion.md) para pérdida del disco, frase olvidada, CA intermedia o clave de ámbito comprometidas |

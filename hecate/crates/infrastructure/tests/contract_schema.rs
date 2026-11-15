@@ -59,15 +59,41 @@ fn failed(code: &str) -> Value {
 
 #[test]
 fn both_contracts_are_openapi_3_1_in_json() {
-    for name in ["common.v1.json", "hecate.v1.json"] {
+    for (name, version) in [("common.v1.json", "1.1.0"), ("hecate.v1.json", "1.0.0")] {
         let document = document(name);
         assert_eq!(document["openapi"], "3.1.0", "{name}");
-        assert_eq!(document["info"]["version"], "1.0.0", "{name}");
+        assert_eq!(document["info"]["version"], version, "{name}");
         assert_eq!(
             document["info"]["license"]["identifier"],
             "AGPL-3.0-or-later"
         );
     }
+}
+
+/// The common envelope 1.1.0 (feature 008): `meta` accepts the optional `service`, `provider` and
+/// `idempotency_key` of Hermes, each with its pattern.
+#[test]
+fn a_meta_with_the_optional_fields_of_hermes_validates() {
+    let contract = Contract::load();
+    let completed = contract.common_schema("Completed");
+    let mut body = json!({
+        "status": "completed",
+        "data": {},
+        "error": null,
+        "meta": {
+            "request_id": "req-1",
+            "duration_ms": 1,
+            "service": "chat",
+            "provider": "telegram",
+            "idempotency_key": "case-1234-notify",
+        },
+    });
+    contract.check_schema(&completed, &body).unwrap();
+    body["meta"]["service"] = json!("Chat!");
+    assert!(contract.check_schema(&completed, &body).is_err());
+    body["meta"]["service"] = json!("chat");
+    body["meta"]["idempotency_key"] = json!("");
+    assert!(contract.check_schema(&completed, &body).is_err());
 }
 
 #[test]

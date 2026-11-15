@@ -1,0 +1,94 @@
+{
+  "status": 200,
+  "body": {
+    "ok": true,
+    "result": [
+      {
+        "update_id": 100,
+        "message": {
+          "message_id": 10,
+          "from": {
+            "id": 987654321,
+            "is_bot": false,
+            "first_name": "Demo"
+          },
+          "chat": {
+            "id": 987654321,
+            "type": "private",
+            "first_name": "Demo"
+          },
+          "date": 1794650400,
+          "text": "ABCD-2345"
+        }
+      },
+      {
+        "update_id": 101,
+        "edited_message": {
+          "message_id": 10,
+          "chat": {
+            "id": 987654321,
+            "type": "private"
+          },
+          "date": 1794650401,
+          "text": "ABCD-2346"
+        }
+      },
+      {
+        "update_id": 102,
+        "message": {
+          "message_id": 11,
+          "from": {
+            "id": 5550001,
+            "is_bot": false,
+            "first_name": "Demo"
+          },
+          "chat": {
+            "id": -100200300,
+            "type": "group",
+            "title": "Familia"
+          },
+          "date": 1794650400,
+          "text": "WXYZ-6789"
+        }
+      },
+      {
+        "update_id": 103,
+        "message": {
+          "message_id": 12,
+          "from": {
+            "id": 987654321,
+            "is_bot": false,
+            "first_name": "Demo"
+          },
+          "chat": {
+            "id": 987654321,
+            "first_name": "Demo",
+            "type": "private"
+          },
+          "date": 1794650402,
+          "sticker": {
+            "file_id": "x"
+          }
+        }
+      },
+      {
+        "update_id": 104,
+        "message": {
+          "message_id": 13,
+          "from": {
+            "id": 987654321,
+            "is_bot": false,
+            "first_name": "Demo"
+          },
+          "chat": {
+            "id": 987654321,
+            "type": "private",
+            "first_name": "Demo"
+          },
+          "date": 1794650400,
+          "text": "hola"
+        }
+      }
+    ]
+  }
+}

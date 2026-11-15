@@ -1,0 +1,9 @@
+# La CA raíz de Cerbero, que Envoy anuncia al pedir el certificado de cliente. ACCEPT_UNTRUSTED: Envoy no rechaza ningún
+# certificado; Hermes valida la cadena, la lista de revocación y el token, y responde auth en el sobre.
+resources:
+  - "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret
+    name: cerbero_root
+    validation_context:
+      trusted_ca: { filename: /var/lib/hermes/proxy/current/ca.crt }
+      watched_directory: { path: /var/lib/hermes/proxy }
+      trust_chain_verification: ACCEPT_UNTRUSTED

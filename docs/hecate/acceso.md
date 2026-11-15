@@ -1,8 +1,8 @@
 # Acceso en Hécate
 
 Quién puede leer qué en Hécate. Este documento desarrolla la Access Policy de cada identidad (sus propios secretos por
-defecto y las excepciones que el admin comparte, secreto a secreto), los permisos que salen de las declaraciones, la
-resolución de secretos por la API con sus rechazos, que no se distinguen ni por su contenido ni por su tiempo, y el
+defecto y las excepciones que el admin comparte, secreto a secreto), los permisos que salen de las declaraciones, el
+acceso por app, la resolución de secretos por la API con sus rechazos, que no se distinguen ni por su contenido ni por su tiempo, y el
 permiso de estado. Es para quien quiere entender o revisar el diseño; cómo resuelve un componente está en la
 [guía de integración](integracion.md).
 
@@ -34,6 +34,16 @@ permiso de estado. Es para quien quiere entender o revisar el diseño; cómo res
 
 Al registrar una instancia de Hermes o una integración de Hades, las referencias `secret://` de su declaración dan
 permiso de lectura a su identidad. Una referencia fuera de su ámbito se rechaza. El valor lo introduce el admin aparte.
+
+## El acceso por app
+
+Hécate guarda también qué identidades pueden llamar a cada app, como Hermes ([ADR 0013](../adr/0013-acceso-por-app.md)):
+
+- el acceso es a la app entera, sin permisos por función;
+- el token corto no concede acceso: lo firma quien llama, así que lo que diga sobre lo que puede hacer no prueba nada;
+- la app autentica a quien la llama con su certificado y su token corto, y decide el acceso con la lista de Hécate.
+
+Los permisos de las personas no están aquí: son del frontal, Ténaro.
 
 ## La resolución
 

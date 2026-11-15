@@ -1,0 +1,9 @@
+# El certificado de Hermes (contracts/proxy.md): Hermes escribe cada generación en gen-<n>/ y cambia el enlace current de
+# forma atómica; Envoy vigila el directorio del proxy y lo recarga sin reiniciarse ni cortar las conexiones en curso.
+resources:
+  - "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret
+    name: hermes_certificate
+    tls_certificate:
+      certificate_chain: { filename: /var/lib/hermes/proxy/current/tls.crt }
+      private_key: { filename: /var/lib/hermes/proxy/current/tls.key }
+      watched_directory: { path: /var/lib/hermes/proxy }

@@ -1,0 +1,16 @@
+# Contexto de las imágenes de pruebas (hermes/Dockerfile y hermes/deploy/hecate/Dockerfile)
+.git
+.claude
+.specify
+docs
+specs
+**/.venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/target
+**/.env
+**/.env.*
+hermes/deploy/.secrets

@@ -27,7 +27,7 @@ Ténaro es el backend de Cerbero para la UI (*backend for frontend*): la única 
 flowchart LR
     Persona -- "passkey (WebAuthn), TLS" --> Tenaro[Ténaro]
     Tenaro -- "vistas y acciones manuales" --> Hades
-    Tenaro -- "contactos, variables de plantillas, prueba de conexión" --> Hermes
+    Tenaro -- "prueba de conexión, librerías e instancias con su estado" --> Hermes
     Tenaro -- "secretos, permisos, identidades, desbloqueo" --> Hecate[Hécate]
     Tenaro -- "lo que exponga" --> Estigia
     Tenaro -- "lo que exponga" --> Caronte
@@ -36,8 +36,8 @@ flowchart LR
 | Con quién | Qué hace Ténaro |
 |---|---|
 | **Hades** | Vistas (Cases, `case-timeline`, `playbook-health`, `event-log`), acciones manuales (lanzar una Response, corregir un Verdict, relanzar), valores de las variables de Playbooks e integraciones |
-| **Hermes** | Contactos y valores de las variables de las plantillas; prueba de conexión de las instancias; ver librerías y su estado |
-| **Repositorio privado** | Editar lo propio de Hades (Playbooks, integraciones) y de Hermes (instancias, plantillas, librerías) abriendo una PR, que pasa una batería de pruebas. Lo oficial vive en el repositorio de Cerbero y no se edita desde aquí |
+| **Hermes** | Prueba de conexión de las instancias; ver librerías, instancias y su estado. La configuración de Hermes (instancias, plantillas, variables y contactos) la aplica el admin con la CLI de Hermes |
+| **Repositorio privado** | Editar lo propio de Hades (Playbooks, integraciones) y de Hermes (librerías propias) abriendo una PR, que pasa una batería de pruebas. Lo oficial vive en el repositorio de Cerbero y no se edita desde aquí |
 | **Hécate** | Gestión de secretos y versiones, permisos, identidades y tokens de alta, rotaciones; desbloquear y sellar |
 | **Estigia, Caronte** | Lo que cada uno exponga a las personas (consultas, Data Tables, Rules) |
 

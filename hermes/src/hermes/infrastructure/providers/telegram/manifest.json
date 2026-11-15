@@ -1,0 +1,37 @@
+{
+  "provider": "telegram",
+  "version": "1.0.0",
+  "implements": [
+    {
+      "service": "chat",
+      "contract": "1",
+      "functions": {
+        "send_message": {
+          "kind": "command",
+          "mode": "sync",
+          "timeout": "10s"
+        }
+      }
+    }
+  ],
+  "capabilities": {
+    "max_length": 4096,
+    "formats": [
+      "text",
+      "html"
+    ]
+  },
+  "limits": {
+    "requests_per_minute": 30
+  },
+  "permissions": [
+    "Recibir los mensajes privados que se envían al bot (getUpdates)",
+    "Enviar mensajes a los chats privados que han escrito al bot (sendMessage)"
+  ],
+  "instance_config": {
+    "bot_token": {
+      "type": "secret",
+      "required": true
+    }
+  }
+}

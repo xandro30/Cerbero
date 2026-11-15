@@ -118,7 +118,8 @@ Todos son event-sourced y ningún evento lleva un valor; los accesos van a un re
 - **[Acceso](hecate/acceso.md).** Cada identidad solo resuelve sus propios secretos, salvo las excepciones que el admin
   comparte, secreto a secreto, en su Access Policy. La resolución comprueba todo antes de descifrar nada, y sus
   rechazos no se distinguen ni por su contenido ni por su tiempo. El permiso de estado deja ver recuentos agregados,
-  nunca nombres.
+  nunca nombres. Hécate guarda también qué identidades pueden llamar a cada app, a la app entera, sin que el token
+  corto conceda nada.
 - **[Auditoría](hecate/auditoria.md).** Cada uso y cada intento deja una fila en un registro de accesos append-only,
   que nunca lleva valores. Hécate firma además los checkpoints de la auditoría de cada componente, para que nadie pueda
   reescribir su historia.
