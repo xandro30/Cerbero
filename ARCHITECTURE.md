@@ -114,7 +114,7 @@ Regla de dependencia: `infrastructure → application → domain`. El dominio no
 | **Estigia** | Ingesta, entidades y búsqueda | Fuerte en entidades (Asset, identificadores, resolución) | **Sí** | No |
 | **Caronte** | Motor de reglas | Medio: Rule, Rule Deployment, Detection, Alert | No | No |
 | **Hades** | Flujo de trabajo con estado | **Fuerte**: Alert, Case, Playbook, Response | **Sí** | **Sí** (los cuatro aggregates) |
-| **Hécate** | Secretos y claves | Medio: Secret, Key, Certificate, Identity, Access Policy | No | **Sí** (los cinco aggregates y el registro de accesos) |
+| **Hécate** | Secretos y claves | Medio: Secret, Key, Certificate, Identity, Access Policy, App Access | No | **Sí** (los seis aggregates y el registro de accesos) |
 | **Hermes** | Librerías de terceros con contrato | Fuerte en lo común (sobre, contratos, Task, contactos); tipo de servicio = port, proveedor = adapter | **Sí** (Task) | **Sí** (Task) |
 | **Ténaro** | Backend de la UI (BFF) | Sin definir (ver [DECISIONS](DECISIONS.md)) | Sin definir | Sin definir |
 
@@ -197,10 +197,10 @@ Detalle completo en [docs/hermes.md](docs/hermes.md).
 Detalle completo en [docs/hecate.md](docs/hecate.md).
 
 - **Qué hace:** guarda los secretos de terceros y gestiona las claves de Cerbero (CA interna, claves de firma, rotación); firma los checkpoints de auditoría de todos los componentes. Se construye en Cerbero con primitivas de librerías auditadas (salvo Shamir, sin auditoría pública: [riesgo aceptado](DECISIONS.md#riesgos-aceptados)) detrás de un port `CryptoProvider`.
-- **Modelo:** cinco aggregates event-sourced (Secret, Key, Certificate, Identity, Access Policy) y un registro de accesos aparte; ningún evento lleva un valor.
+- **Modelo:** seis aggregates event-sourced (Secret, Key, Certificate, Identity, Access Policy, App Access) y un registro de accesos aparte; ningún evento lleva un valor.
 - **Cifrado por sobre:** raíz solo en memoria → claves de ámbito (una por identidad) → DEK por versión de secreto, con AES-256-GCM y la ruta, la versión y el ámbito como datos asociados.
 - **Arranque:** sellada al reiniciar; se desbloquea con la frase del admin o, para recuperar, con 2 de 3 partes de Shamir.
-- **Acceso:** cada identidad lee `secret://<su identidad>/**`, con permisos derivados de lo que declaran instancias e integraciones, y los secretos concretos de otras que el admin le comparte con una excepción de su Access Policy. Los Playbooks nunca manejan secretos.
+- **Acceso:** cada identidad lee `secret://<su identidad>/**`, con permisos derivados de lo que declaran instancias e integraciones, y los secretos concretos de otras que el admin le comparte con una excepción de su Access Policy. Los Playbooks nunca manejan secretos. Hécate guarda también la lista de acceso de cada app, que cada app consulta.
 - **Frontera:** solo red interna; nunca llama a nadie.
 
 ---
@@ -231,7 +231,7 @@ Común a todo Cerbero. La CA y las claves las gestiona Hécate.
 
 - **mTLS** con los certificados anteriores: identidad y canal cifrado.
 - **JWT corto firmado por quien llama** con su propia clave de firma de llamadas (Ed25519, distinta de la del TLS), que registra en el alta y Hécate publica para los componentes autenticados. Lleva `iss`, `aud`, `exp` de minutos, `jti` y, si quien llama lo pone, el contexto de auditoría en `cerbero_audit` (`source`, Response, Playbook o Job, owner / maintainer o la persona). No lleva permisos: lo firma quien llama, así que no concede nada.
-- **Acceso por app:** Hécate guarda qué identidades pueden llamar a cada app, a la app entera y sin permisos por función ([ADR 0013](docs/adr/0013-acceso-por-app.md)).
+- **Acceso por app:** Hécate guarda qué identidades pueden llamar a cada app, a la app entera y sin permisos por función ([ADR 0013](docs/adr/0013-acceso-por-app.md)). Quien recibe la llamada decide con esa lista: la consulta a Hécate, guarda una copia y, tras autenticar, solo atiende a quien está en ella; sin nadie en la lista, no atiende a nadie.
 - **Ligado al canal:** el receptor exige que `iss` coincida con la identidad del certificado mTLS; un JWT robado no sirve desde otro componente. Un servicio en Python la toma del certificado que le reenvía su proxy TLS ([ADR 0011](docs/adr/0011-pila-hermes.md)).
 - **No repudio firmado:** cada cambio queda atribuido criptográficamente a quien lo pidió (ver la [auditoría de Hécate](docs/hecate/auditoria.md#la-firma-de-checkpoints)).
 

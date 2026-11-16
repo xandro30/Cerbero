@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Cerbero Hermes API",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "summary": "The API of Hermes between Cerbero components: chat.send_message, the capabilities and the connection test of an instance.",
     "description": "Every operation needs the client certificate of a Cerbero component, forwarded by the TLS proxy, and a short call token in Authorization, as the integration guide of Hécate fixes, with aud equal to the SPIFFE ID of Hermes. A failure of a provider travels inside the envelope with HTTP 200; a failure before reaching the provider carries the HTTP status of its code. The health of Hermes is not in this API: it goes through its local administration channel.",
     "license": {
@@ -118,7 +118,7 @@
             }
           },
           "401": {
-            "description": "The client certificate or the short call token are not valid; the message never says which check failed.",
+            "description": "The client certificate or the short call token are not valid, or the caller is not in the access list of Hermes that Hécate keeps; the message never says which check failed.",
             "content": {
               "application/json": {
                 "schema": {
@@ -252,7 +252,7 @@
             }
           },
           "503": {
-            "description": "Hermes is not ready, its database does not answer, or Hécate does not answer about a call key that Hermes does not have yet; it is worth retrying later.",
+            "description": "Hermes is not ready (also while it has no copy of its access list), its database does not answer, or Hécate does not answer about a call key or about the access list when the caller is not in the copy of Hermes; it is worth retrying later.",
             "content": {
               "application/json": {
                 "schema": {
@@ -311,7 +311,7 @@
             }
           },
           "401": {
-            "description": "The client certificate or the short call token are not valid; the message never says which check failed.",
+            "description": "The client certificate or the short call token are not valid, or the caller is not in the access list of Hermes that Hécate keeps; the message never says which check failed.",
             "content": {
               "application/json": {
                 "schema": {
@@ -361,7 +361,7 @@
             }
           },
           "503": {
-            "description": "Hermes is not ready, its database does not answer, or Hécate does not answer about a call key that Hermes does not have yet; it is worth retrying later.",
+            "description": "Hermes is not ready (also while it has no copy of its access list), its database does not answer, or Hécate does not answer about a call key or about the access list when the caller is not in the copy of Hermes; it is worth retrying later.",
             "content": {
               "application/json": {
                 "schema": {
@@ -471,7 +471,7 @@
             }
           },
           "401": {
-            "description": "The client certificate or the short call token are not valid; the message never says which check failed.",
+            "description": "The client certificate or the short call token are not valid, or the caller is not in the access list of Hermes that Hécate keeps; the message never says which check failed.",
             "content": {
               "application/json": {
                 "schema": {
@@ -546,7 +546,7 @@
             }
           },
           "503": {
-            "description": "Hermes is not ready, its database does not answer, or Hécate does not answer about a call key that Hermes does not have yet; it is worth retrying later.",
+            "description": "Hermes is not ready (also while it has no copy of its access list), its database does not answer, or Hécate does not answer about a call key or about the access list when the caller is not in the copy of Hermes; it is worth retrying later.",
             "content": {
               "application/json": {
                 "schema": {

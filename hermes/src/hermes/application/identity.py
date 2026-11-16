@@ -5,8 +5,9 @@
 - **Renewal:** at two thirds of the life of the certificate, once per certificate, with new keys saved before sending.
   Without an answer, or with Hécate sealed or down, the same request is repeated every 60 s; `auth` means that the
   certificate is no longer valid.
-- **Publications:** the CRLs and the call keys of Hécate, refreshed every 240 s and kept on disk; while Hécate does not
-  answer, the last copy holds.
+- **Publications:** the CRLs and the call keys of Hécate and the access list of Hermes, refreshed every 240 s and kept
+  on disk; while Hécate does not answer, the last copy holds. A caller that is not in the copy of the list makes Hermes
+  ask for it again, with one request at a time, so a grant counts in the next call.
 - **Validity:** without a valid certificate (missing, expired, in the CRL, refused at renewal, or Hécate with another
   root CA) Hermes is not ready and needs a new enrollment token.
 """
@@ -24,6 +25,7 @@ from typing import Any
 from cryptography import x509
 
 from hermes.application.ports import (
+    AccessList,
     GeneratedKeys,
     HecateApi,
     HecateTrustChanged,
@@ -76,6 +78,8 @@ class IdentityService:
         self._keys: PublishedKeys | None = None
         self._asked_keys: dict[str, Mapping[str, Any]] = {}
         self._lookups: dict[str, asyncio.Future[Mapping[str, Any] | None]] = {}
+        self._access: AccessList | None = None
+        self._access_lookup: asyncio.Future[AccessList] | None = None
         self._refused = False
         self._trust_changed = False
         self._waiting: list[asyncio.Event] = []
@@ -83,11 +87,12 @@ class IdentityService:
     # --- State -----------------------------------------------------------------------------------------------------
 
     def load(self) -> None:
-        """What the store kept: the identity, a renewal in flight and the last publications."""
+        """What the store kept: the identity, a renewal in flight and the last publications, with the access list."""
         self._set_identity(self._store.load())
         self._pending = self._store.load_pending_renewal()
         self._set_revocations(self._store.load_revocations())
         self._keys = self._store.load_keys()
+        self._access = self._store.load_access()
 
     def _set_identity(self, identity: StoredIdentity | None) -> None:
         self._identity = identity
@@ -123,13 +128,24 @@ class IdentityService:
             return NEEDS_TOKEN
         return None
 
+    def access_loaded(self) -> bool:
+        """Whether Hermes has a copy of its access list, saved or obtained from Hécate; without one it is not ready."""
+        return self._access is not None
+
     def material(self) -> TrustMaterial | None:
-        """The trust to check the callers (`TrustSource`), with a valid identity and the publications of Hécate."""
-        identity = self._identity
-        if identity is None or self._root is None or self.problem() is not None or self._keys is None or not self._crls:
+        """The trust to check the callers (`TrustSource`), with a valid identity and the publications of Hécate, the
+        access list among them."""
+        identity, access = self._identity, self._access
+        if identity is None or self._root is None or self.problem() is not None:
+            return None
+        if self._keys is None or not self._crls or access is None:
             return None
         return TrustMaterial(
-            root=self._root, hermes=identity.certificate.spiffe_id, revocations=self._crls, keys=self._keys.keys
+            root=self._root,
+            hermes=identity.certificate.spiffe_id,
+            revocations=self._crls,
+            keys=self._keys.keys,
+            access=access,
         )
 
     async def wait_for_enrollment(self) -> None:
@@ -237,14 +253,20 @@ class IdentityService:
 
     # --- Publications ----------------------------------------------------------------------------------------------
 
+    def _set_access(self, access: AccessList) -> None:
+        self._access = access
+        self._store.save_access(access)
+
     async def _fetch_publications(self) -> None:
         revocations = await self._hecate.revocations()
         keys = await self._hecate.keys()
+        access = await self._hecate.callers()
         self._set_revocations(revocations)
         self._keys = keys
         self._asked_keys.clear()
         self._store.save_revocations(revocations)
         self._store.save_keys(keys)
+        self._set_access(access)
         self._trust_changed = False
 
     async def refresh_publications(self) -> None:
@@ -280,8 +302,29 @@ class IdentityService:
         self._asked_keys[kid] = found
         return found
 
+    async def lookup_access(self) -> AccessList:
+        """The access list asked to Hécate again, because a caller is not in the copy: the lookups at once share one
+        request, and the new list replaces the copy and is saved. Nothing remembers who was not in it."""
+        lookup = self._access_lookup
+        if lookup is None:
+            lookup = asyncio.ensure_future(self._ask_access())
+            self._access_lookup = lookup
+            lookup.add_done_callback(self._access_asked)
+        return await asyncio.shield(lookup)
+
+    def _access_asked(self, _: asyncio.Future[AccessList]) -> None:
+        self._access_lookup = None
+
+    async def _ask_access(self) -> AccessList:
+        try:
+            access = await self._hecate.callers()
+        except HermesError:
+            raise HermesError(ErrorCode.UNAVAILABLE, "hecate does not answer about the access list") from None
+        self._set_access(access)
+        return access
+
     async def ensure_publications(self) -> None:
-        """At start: the saved copy if there is one; otherwise Hécate must give them."""
-        if self._crls and self._keys is not None:
+        """At start: the saved copy if there is one; otherwise Hécate must give them, the access list among them."""
+        if self._crls and self._keys is not None and self._access is not None:
             return
         await self._fetch_publications()

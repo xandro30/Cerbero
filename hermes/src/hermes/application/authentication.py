@@ -2,8 +2,10 @@
 
 In order: the certificate that the proxy forwarded, with its chain up to the current root of Cerbero, its only name a
 SPIFFE ID of the trust domain and its serial out of the CRL of its intermediate; then the short token, signed with an
-active call key that Hécate publishes for that identity, for Hermes, with its times and a `jti` used once. Any failure
-answers `auth` with the same message; only the log says why, never with the token or the certificate.
+active call key that Hécate publishes for that identity, for Hermes, with its times; then the identity in the access
+list of Hermes, asked to Hécate again if it is not in the copy; and last a `jti` used once, so a caller without access
+leaves none. Any failure answers `auth` with the same message; only the log says why, never with the token or the
+certificate. Nothing the token says grants an access.
 """
 
 from __future__ import annotations
@@ -115,6 +117,7 @@ class CallAuthenticator:
         try:
             identity = self._certificate(credentials.certificate, material, now)
             claims = await self._token(credentials.authorization, identity, material, now)
+            await self._allowed(identity, material)
             if not await self._used.remember(str(identity), claims.jti, claims.expires_at + MARGIN):
                 raise _Refused("jti_used")
         except _Refused as refused:
@@ -162,6 +165,15 @@ class CallAuthenticator:
         if crl.get_revoked_certificate_by_serial_number(presented.certificate.serial_number) is not None:
             raise _Refused("revoked")
         return identity
+
+    async def _allowed(self, identity: SpiffeId, material: TrustMaterial) -> None:
+        """The identity in the copy of the access list, or in the list asked to Hécate again, so a grant counts in the
+        next call; `unavailable` if Hécate does not answer."""
+        if material.access.allows(identity.identity):
+            return
+        access = await self._trust.lookup_access()
+        if not access.allows(identity.identity):
+            raise _Refused("not_allowed")
 
     async def _key(self, kid: object, material: TrustMaterial) -> Mapping[str, Any]:
         """The key of the token: in the last list, or asked to Hécate if the `kid` has the form of a thumbprint."""

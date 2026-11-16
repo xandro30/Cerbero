@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use common::*;
 use hecate_application::access_policy::service::AccessPolicyService;
+use hecate_application::app_access::service::AppAccessService;
 use hecate_application::ca::service::CaService;
 use hecate_application::ca::settings::CaSettings;
 use hecate_application::identity::service::IdentityService;
@@ -61,10 +62,17 @@ fn running() -> Running {
         rig.access_log.clone(),
         rig.clock.clone(),
     ));
+    let access = Arc::new(AppAccessService::new(
+        rig.sealing.clone(),
+        identity_store.clone(),
+        rig.access_log.clone(),
+        rig.clock.clone(),
+    ));
     let identities = Arc::new(IdentityService::new(
         rig.sealing.clone(),
         ca.clone(),
         policies.clone(),
+        access.clone(),
         rig.service.clone(),
         identity_store,
         Arc::new(InMemoryEnrollAttempts::default()),
@@ -82,6 +90,7 @@ fn running() -> Running {
             ca,
             identities,
             policies,
+            access,
             changed: Arc::new(|| {}),
         },
     );

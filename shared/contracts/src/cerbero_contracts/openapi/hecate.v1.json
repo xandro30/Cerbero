@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Hécate API",
-    "version": "1.0.0",
-    "summary": "Enrollment, renewal, revocation lists, published call-signing keys, secret resolution, the aggregate status and capabilities of Hécate.",
+    "version": "1.1.0",
+    "summary": "Enrollment, renewal, revocation lists, published call-signing keys, secret resolution, the list of who may call each app, the aggregate status and capabilities of Hécate.",
     "description": "TLS 1.3 only. Every operation but the enrollment requires a client certificate issued by Hécate with the current CA and a short call token bound to it. Requests are standard JSON in UTF-8 of up to 64 KiB. While Hécate is sealed, every operation but the status answers unavailable; the status answers with sealed set to true.",
     "license": {
       "name": "AGPL-3.0-or-later",
@@ -269,6 +269,35 @@
         }
       }
     },
+    "/v1/callers": {
+      "get": {
+        "operationId": "listCallers",
+        "summary": "The list of access of the app that asks: the identities that may call it.",
+        "description": "Only the list of the identity that asks: the operation takes no parameter, so no app learns who calls another. An empty list is an answer like any other. A served query leaves no row in the access log; a refused one does.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Callers"
+          },
+          "400": {
+            "$ref": "#/components/responses/Validation"
+          },
+          "401": {
+            "$ref": "#/components/responses/Auth"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
     "/v1/capabilities": {
       "get": {
         "operationId": "getCapabilities",
@@ -476,6 +505,27 @@
           }
         }
       },
+      "Callers": {
+        "description": "The app that asks, the identities that may call it, in the order of their names, and the version of its list.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "common.v1.json#/components/schemas/Completed"
+                },
+                {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CallersResult"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
       "Capabilities": {
         "description": "The component, the major version and its operations.",
         "content": {
@@ -651,6 +701,11 @@
       "SpiffeId": {
         "type": "string",
         "pattern": "^spiffe://[a-z0-9._-]{1,255}/[a-z][a-z0-9-]{0,62}$"
+      },
+      "IdentityName": {
+        "type": "string",
+        "description": "The name of an identity of an app: lowercase letters, digits and '-', starting with a letter, up to 63, one segment.",
+        "pattern": "^[a-z][a-z0-9-]{0,62}$"
       },
       "Serial": {
         "type": "string",
@@ -891,6 +946,30 @@
           }
         }
       },
+      "CallersResult": {
+        "type": "object",
+        "required": ["app", "callers", "version"],
+        "additionalProperties": false,
+        "properties": {
+          "app": {
+            "description": "The identity that asks.",
+            "$ref": "#/components/schemas/IdentityName"
+          },
+          "callers": {
+            "description": "The identities that may call the app, in the order of their names; empty if none may.",
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/IdentityName"
+            }
+          },
+          "version": {
+            "description": "The version of the list: how many changes it has had; 0 if it never had one.",
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
       "CapabilitiesResult": {
         "type": "object",
         "required": ["component", "api", "operations"],
@@ -906,7 +985,7 @@
             "type": "array",
             "uniqueItems": true,
             "items": {
-              "enum": ["identities:enroll", "certificates:renew", "revocations", "keys", "keys/{kid}", "secrets:resolve", "status", "capabilities"]
+              "enum": ["identities:enroll", "certificates:renew", "revocations", "keys", "keys/{kid}", "secrets:resolve", "status", "callers", "capabilities"]
             }
           }
         }

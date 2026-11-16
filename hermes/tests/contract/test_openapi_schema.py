@@ -87,7 +87,7 @@ REQUEST = {
 
 
 def test_both_documents_are_openapi_3_1_with_their_license_and_version() -> None:
-    for name, version in (("common.v1.json", "1.1.0"), ("hermes.v1.json", "1.0.0")):
+    for name, version in (("common.v1.json", "1.1.0"), ("hermes.v1.json", "1.0.1")):
         document = load_document(name)
         assert document["openapi"] == "3.1.0", name
         assert document["info"]["version"] == version, name

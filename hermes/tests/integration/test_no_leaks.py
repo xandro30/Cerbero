@@ -173,7 +173,7 @@ async def test_no_secret_code_address_token_or_certificate_leaks(migrated: Async
             send = SendMessage(
                 configuration=state, channels=channels, providers=providers, secrets=cache, audit=audit, clock=clock
             )
-            trust = StaticTrust(ca.root, HERMES, [ca.crl([])], [key.jwk()])
+            trust = StaticTrust(ca.root, HERMES, [ca.crl([])], [key.jwk()], callers=["hades"])
             app = create_network_api()
             authenticator = CallAuthenticator(trust=trust, used_tokens=SqlUsedTokens(migrated), clock=clock)
             install_authentication(app, Authentication(authenticator=authenticator, ready=lambda: send.ready))

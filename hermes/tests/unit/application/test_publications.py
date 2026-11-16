@@ -1,13 +1,16 @@
-"""The publications of Hécate (T057, FR-008): the CRLs and the call keys, refreshed and kept for the next start."""
+"""The publications of Hécate (T057, FR-008): the CRLs and the call keys, refreshed and kept for the next start; and
+the access list of Hermes among them, asked again when a caller is not in the copy (T023 of 009)."""
 
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 
 import pytest
 from cryptography import x509
 
 from hermes.application.identity import PUBLICATIONS_INTERVAL_S, IdentityService
+from hermes.application.ports import AccessList
 from hermes.domain.shared.errors import ErrorCode, HermesError
 from hermes.domain.shared.secret import SecretValue
 from hermes.infrastructure.hecate.keys import generate_keys
@@ -134,3 +137,127 @@ async def test_hecate_not_answering_about_a_key_is_unavailable() -> None:
     with pytest.raises(HermesError) as raised:
         await world.service.key("k" * 43)
     assert raised.value.code is ErrorCode.UNAVAILABLE
+
+
+# --- The access list of Hermes ----------------------------------------------------------------------------------
+
+
+def listed(world: World, version: int, *callers: str) -> AccessList:
+    return AccessList(app="hermes", callers=callers, version=version, fetched_at=world.clock.now())
+
+
+async def test_the_enrollment_brings_the_access_list_empty_while_nothing_is_granted() -> None:
+    world = await World().enrolled()
+    material = world.service.material()
+    assert material is not None
+    assert material.access == listed(world, 0)
+    assert world.service.access_loaded()
+
+
+async def test_the_refresh_brings_the_access_list_with_the_others_keeps_it_and_makes_it_current() -> None:
+    world = await World().enrolled()
+    world.hecate.grant("hades")
+    world.hecate.grant("caller")
+    world.clock.advance(timedelta(seconds=PUBLICATIONS_INTERVAL_S))
+    await world.service.refresh_publications()
+    material = world.service.material()
+    assert material is not None
+    assert material.access == listed(world, 2, "caller", "hades")
+    assert world.store.access == material.access
+
+
+@pytest.mark.parametrize("failure", ["down", "sealed"])
+async def test_for_an_hour_without_hecate_the_last_access_list_stays(failure: str) -> None:
+    """SC-004: no one gains or loses the access because Hécate does not answer."""
+    world = await World().enrolled()
+    world.hecate.grant("caller")
+    await world.service.refresh_publications()
+    kept = world.store.access
+    setattr(world.hecate, failure, True)
+    world.hecate.revoke("caller")
+    world.hecate.grant("hades")
+    for _ in range(15):
+        world.clock.advance(timedelta(seconds=PUBLICATIONS_INTERVAL_S))
+        await world.service.refresh_publications()
+    material = world.service.material()
+    assert material is not None
+    assert material.access.callers == ("caller",)
+    assert world.store.access == kept
+
+
+async def test_at_start_the_saved_access_list_is_used_without_asking_hecate() -> None:
+    world = await World().enrolled()
+    world.hecate.grant("caller")
+    await world.service.refresh_publications()
+    world.hecate.down = True
+    requests = world.hecate.access_requests
+    restarted = world.started()
+    await restarted.ensure_publications()
+    material = restarted.material()
+    assert material is not None
+    assert material.access.callers == ("caller",)
+    assert world.hecate.access_requests == requests
+
+
+async def test_without_a_saved_access_list_the_start_asks_hecate_for_it() -> None:
+    world = await World().enrolled()
+    world.hecate.grant("caller")
+    world.store.access = None
+    restarted = world.started()
+    assert not restarted.access_loaded()
+    assert restarted.material() is None
+    await restarted.ensure_publications()
+    material = restarted.material()
+    assert material is not None
+    assert material.access == listed(world, 1, "caller")
+    assert world.store.access == material.access
+    assert restarted.access_loaded()
+
+
+async def test_without_an_access_list_and_without_hecate_the_start_fails_and_there_is_no_trust() -> None:
+    world = await World().enrolled()
+    world.store.access = None
+    world.hecate.down = True
+    restarted = world.started()
+    with pytest.raises(HermesError) as raised:
+        await restarted.ensure_publications()
+    assert raised.value.code is ErrorCode.UNAVAILABLE
+    assert restarted.material() is None
+    assert not restarted.access_loaded()
+
+
+async def test_lookups_at_once_make_one_request_and_the_new_list_replaces_the_copy_and_is_saved() -> None:
+    world = await World().enrolled()
+    world.hecate.grant("caller")
+    requests = world.hecate.access_requests
+    found = await asyncio.gather(*(world.service.lookup_access() for _ in range(5)))
+    assert found == [listed(world, 1, "caller")] * 5
+    assert world.hecate.access_requests == requests + 1
+    material = world.service.material()
+    assert material is not None
+    assert material.access == listed(world, 1, "caller")
+    assert world.store.access == material.access
+
+
+async def test_each_lookup_after_another_asks_hecate_again() -> None:
+    """Nothing remembers who has no access, so a grant counts in the next call."""
+    world = await World().enrolled()
+    requests = world.hecate.access_requests
+    assert (await world.service.lookup_access()).callers == ()
+    world.hecate.grant("caller")
+    assert (await world.service.lookup_access()).callers == ("caller",)
+    assert world.hecate.access_requests == requests + 2
+
+
+@pytest.mark.parametrize("failure", ["down", "sealed"])
+async def test_hecate_not_answering_a_lookup_is_unavailable_and_the_copy_stays(failure: str) -> None:
+    world = await World().enrolled()
+    world.hecate.grant("caller")
+    await world.service.refresh_publications()
+    setattr(world.hecate, failure, True)
+    with pytest.raises(HermesError) as raised:
+        await world.service.lookup_access()
+    assert raised.value.code is ErrorCode.UNAVAILABLE
+    material = world.service.material()
+    assert material is not None
+    assert material.access.callers == ("caller",)

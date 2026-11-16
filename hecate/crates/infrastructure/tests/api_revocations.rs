@@ -99,6 +99,7 @@ async fn the_crls_answer_the_fields_of_the_contract() {
             "keys/{kid}",
             "secrets:resolve",
             "status",
+            "callers",
             "capabilities"
         ])
     );

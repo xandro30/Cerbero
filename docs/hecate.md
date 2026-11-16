@@ -1,6 +1,6 @@
 # Hécate — secretos y claves
 
-*En la mitología, la guardiana de las llaves y las puertas del inframundo.* · Última revisión: 2026-11-12
+*En la mitología, la guardiana de las llaves y las puertas del inframundo.* · Última revisión: 2026-11-16
 
 Ver también: [ARCHITECTURE](../ARCHITECTURE.md) (visión transversal, en especial
 [Identidad y seguridad](../ARCHITECTURE.md#6-identidad-y-seguridad)) · [GLOSSARY](../GLOSSARY.md) ·
@@ -38,7 +38,7 @@ en claro.
 ```mermaid
 flowchart LR
     Hades -- "resolver secretos, renovar identidad, firmar checkpoints" --> Hecate[Hécate]
-    Hermes -- "resolver secretos, renovar identidad, wrap, firmar checkpoints" --> Hecate
+    Hermes -- "resolver secretos, renovar identidad, lista de acceso, wrap, firmar checkpoints" --> Hecate
     Estigia -- "renovar identidad, firmar checkpoints" --> Hecate
     Caronte -- "renovar identidad" --> Hecate
     Tenaro[Ténaro] -- "gestión y desbloqueo (admin)" --> Hecate
@@ -50,7 +50,7 @@ flowchart LR
 |---|---|
 | **Todos los componentes** | Darse de alta con un token y renovar su certificado; consultar la lista de revocación y las claves de firma de llamadas publicadas, siempre autenticados; resolver sus secretos y los que el admin les comparte; firmar los checkpoints de su auditoría |
 | **Hades** | Además, identidades hijas para sus integraciones y, desde un cronjob, el estado (con el permiso de estado) |
-| **Hermes** | Además, `wrap` / `unwrap` para cifrar sus copias de seguridad |
+| **Hermes** | Además, su lista de acceso, que aplica a quien lo llama, y `wrap` / `unwrap` para cifrar sus copias de seguridad |
 | **Ténaro** | Gestión (secretos, Access Policy, identidades, rotaciones) y desbloqueo, siempre con el admin autenticado |
 | **El admin** | Inicializarla, desbloquearla, sellarla y gestionarla con la CLI local en el equipo de Hécate, o desde Ténaro; escribe valores, pero nunca los lee |
 
@@ -69,7 +69,7 @@ sequenceDiagram
     participant K as Hécate
     participant C as Componente
     A->>K: inicializar, desbloquear y crear la CA
-    A->>K: guardar los secretos del componente, compartirle otros y generar su token de alta
+    A->>K: guardar los secretos del componente, compartirle otros, concederle las apps que llama y generar su token
     A->>C: entregar el token
     C->>K: alta con el token (Hécate comprobada con la huella de la CA raíz)
     K-->>C: certificado SPIFFE de 3 días
@@ -82,14 +82,15 @@ sequenceDiagram
 1. El admin pone Hécate en marcha una vez: la inicializa con su frase y tres partes de recuperación, la desbloquea y
    crea la CA.
 2. Guarda los secretos de un componente, que se pueden preparar antes de su alta, le comparte los de otros si hace
-   falta y le genera un token de alta.
+   falta, le concede el acceso a las apps que llama y le genera un token de alta.
 3. El componente se da de alta con el token, tras comprobar que habla con Hécate, y recibe su certificado.
 4. Cada llamada lleva su certificado y un token corto. Resuelve sus secretos y los guarda en caché, y refresca la lista
-   de revocación y las claves publicadas.
+   de revocación y las claves publicadas; una app refresca también su lista de acceso, con la que decide a quién
+   atiende.
 5. A los dos tercios de la vida de su certificado lo renueva, una sola vez y con claves nuevas.
 6. Hécate deja una fila por cada acceso y firma los checkpoints de la auditoría del componente.
 
-Sus cinco aggregates:
+Sus seis aggregates:
 
 | Aggregate | Qué es | Estados |
 |---|---|---|
@@ -98,6 +99,7 @@ Sus cinco aggregates:
 | **Certificate** | Un certificado emitido a una identidad: su emisión, su única renovación y su revocación | `valid`, `revoked`, `expired` |
 | **Identity** | Un componente o una identidad hija (`spiffe://cerbero.home/...`), con sus tokens de alta | Sin alta (solo tokens), `enrolled`, `disabled` |
 | **Access Policy** | Lo que una identidad puede usar además de sus propios secretos: las excepciones del admin, cada una para leer un secreto concreto de otra identidad, y el permiso de estado | Versionada: cada cambio, con quién y cuándo |
+| **App Access** | La lista de acceso de una app: las identidades que pueden llamarla, a la app entera | Versionada: cada cambio, con quién y cuándo |
 
 Todos son event-sourced y ningún evento lleva un valor; los accesos van a un registro aparte.
 
@@ -118,8 +120,9 @@ Todos son event-sourced y ningún evento lleva un valor; los accesos van a un re
 - **[Acceso](hecate/acceso.md).** Cada identidad solo resuelve sus propios secretos, salvo las excepciones que el admin
   comparte, secreto a secreto, en su Access Policy. La resolución comprueba todo antes de descifrar nada, y sus
   rechazos no se distinguen ni por su contenido ni por su tiempo. El permiso de estado deja ver recuentos agregados,
-  nunca nombres. Hécate guarda también qué identidades pueden llamar a cada app, a la app entera, sin que el token
-  corto conceda nada.
+  nunca nombres. Hécate guarda también la lista de acceso de cada app: qué identidades pueden llamarla, a la app
+  entera, sin que el token corto conceda nada. Cada app consulta la suya, y solo la suya, y la aplica a quien la llama;
+  sin nadie en ella, no atiende a nadie.
 - **[Auditoría](hecate/auditoria.md).** Cada uso y cada intento deja una fila en un registro de accesos append-only,
   que nunca lleva valores. Hécate firma además los checkpoints de la auditoría de cada componente, para que nadie pueda
   reescribir su historia.
@@ -130,8 +133,8 @@ Todos son event-sourced y ningún evento lleva un valor; los accesos van a un re
 ## Usarla y desarrollarla
 
 - **[Integrar un componente](hecate/integracion.md).** Lo que hace un componente para usar Hécate, sin leer su código:
-  qué claves genera y guarda, el alta, el token corto de cada llamada, la renovación, lo que refresca, la resolución y
-  su caché, el estado, los errores y Hécate sellada.
+  qué claves genera y guarda, el alta, el token corto de cada llamada, la renovación, lo que refresca, la lista de
+  acceso de una app, la resolución y su caché, el estado, los errores y Hécate sellada.
 - **[CLI y configuración](hecate/cli.md).** Cómo se lanza Hécate, qué necesita del sistema, sus variables de entorno y
   cada orden de la CLI, con sus argumentos, su salida y sus códigos de salida.
 - **[Operación](hecate/operacion.md).** La puesta en marcha y un procedimiento paso a paso para cada situación: el
@@ -166,13 +169,15 @@ Resumen; el detalle y el porqué están en
   AES-256-GCM, HKDF y HMAC; libsodium para Argon2id) detrás de un port `CryptoProvider`, y Shamir de vsss-rs. La CA usa
   rcgen y x509-parser detrás de un port `PkiProvider`, y la API, axum sobre rustls (solo TLS 1.3) y jsonwebtoken para
   los tokens cortos ([ADR 0009](adr/0009-pila-api-hecate.md)). La licencia permite enlazar con OpenSSL
-  ([ADR 0008](adr/0008-excepcion-openssl-agpl.md)), y la Access Policy tiene su propio
-  [ADR 0010](adr/0010-access-policy-hecate.md).
+  ([ADR 0008](adr/0008-excepcion-openssl-agpl.md)); la Access Policy tiene su propio
+  [ADR 0010](adr/0010-access-policy-hecate.md), y el acceso por app, el [ADR 0013](adr/0013-acceso-por-app.md).
 - **Frente a sus referencias:** se construye en Cerbero sin inventar criptografía; frase del admin más Shamir de
   recuperación; certificados de 3 días; identidad SPIFFE sin SPIRE; JWT ligado al canal mTLS; Hécate firma los
   checkpoints de todo Cerbero; renovación única con detección de reutilización; claves de firma de llamadas solo para
   componentes autenticados; sustituir la CA en lugar de revocar la intermedia; alta sin certificado de cliente;
-  excepciones de acceso por secreto concreto, sin comodines ni políticas ligadas a tokens.
+  excepciones de acceso por secreto concreto, sin comodines ni políticas ligadas a tokens; la lista de acceso de cada
+  app, que guarda Hécate y aplica cada app, con las políticas de autorización de las mallas de servicios como
+  referencia.
 - **Descartado:** IdP con OIDC, OAuth *client credentials*, claves API compartidas, OpenBao / SOPS + age / variables de
   entorno como almacén, inventar criptografía.
 - **Riesgos aceptados:** Hécate firma sus propios checkpoints (solo lo cubre un anclaje externo); tras un corte de luz

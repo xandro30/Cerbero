@@ -1,4 +1,5 @@
-"""A valid identity of Hermes written with its store, as an enrollment would leave it, for the tests of `serve`."""
+"""A valid identity of Hermes written with its store, as an enrollment would leave it, for the tests of `serve`: with
+its publications and the copy of its access list, which no one may call until a test grants it."""
 
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from hermes.application.identity import IdentityService
-from hermes.application.ports import IssuedCertificate, PublishedKeys, RevocationLists, StoredIdentity
+from hermes.application.ports import AccessList, IssuedCertificate, PublishedKeys, RevocationLists, StoredIdentity
 from hermes.domain.shared.references import SpiffeId
 from hermes.infrastructure.clock import SystemClock
 from hermes.infrastructure.hecate.client import HecateClient
@@ -44,6 +45,7 @@ def prepare_identity(state_dir: Path, proxy_dir: Path, ca: TestCa | None = None)
     crl = authority.crl().public_bytes(serialization.Encoding.DER)
     store.save_revocations(RevocationLists(crls_der=(crl,), expires_at=expires))
     store.save_keys(PublishedKeys(keys=(), expires_at=expires))
+    store.save_access(AccessList(app="hermes", callers=(), version=0, fetched_at=authority.now))
     return identity
 
 

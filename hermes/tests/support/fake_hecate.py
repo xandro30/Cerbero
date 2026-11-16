@@ -1,8 +1,9 @@
 """A double of the API of Hécate with the rules that the tests of the identity need (docs/hecate/integracion.md).
 
 It signs the key of each CSR with the test CA, gives the same certificate to the same request, treats another request
-with a certificate already renewed as a second attempt (`auth`), can lose an answer after doing the work, can be sealed
-and resolves its secrets with the cache times of Hécate.
+with a certificate already renewed as a second attempt (`auth`), can lose an answer after doing the work, can be sealed,
+resolves its secrets with the cache times of Hécate and gives the access list of Hermes, which the admin changes with
+`grant` and `revoke`.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 
-from hermes.application.ports import IssuedCertificate, PublishedKeys, ResolvedSecret, RevocationLists
+from hermes.application.ports import AccessList, IssuedCertificate, PublishedKeys, ResolvedSecret, RevocationLists
 from hermes.domain.shared.errors import ErrorCode, HermesError
 from hermes.domain.shared.references import SecretReference, SpiffeId
 from hermes.domain.shared.secret import SecretValue
@@ -54,6 +55,9 @@ class FakeHecate:
     resolutions: int = 0
     second_attempts: int = 0
     key_lookups: list[str] = field(default_factory=list)
+    access: list[str] = field(default_factory=list)
+    access_version: int = 0
+    access_requests: int = 0
     _renewed: dict[str, tuple[str, str]] = field(default_factory=dict)
     _issued: dict[tuple[str, str], IssuedCertificate] = field(default_factory=dict)
     _call_keys: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -141,6 +145,28 @@ class FakeHecate:
         if kid not in self._call_keys:
             raise HermesError(ErrorCode.NOT_FOUND, "the key does not exist")
         return self._call_keys[kid]
+
+    def grant(self, identity: str) -> None:
+        """`hecate access grant <identity> hermes`: a new version only if it changes something."""
+        if identity not in self.access:
+            self.access.append(identity)
+            self.access_version += 1
+
+    def revoke(self, identity: str) -> None:
+        """`hecate access revoke <identity> hermes`."""
+        if identity in self.access:
+            self.access.remove(identity)
+            self.access_version += 1
+
+    async def callers(self) -> AccessList:
+        self.access_requests += 1
+        self._answering()
+        return AccessList(
+            app=self.identity,
+            callers=tuple(sorted(self.access)),
+            version=self.access_version,
+            fetched_at=self.clock.now(),
+        )
 
     async def resolve(self, references: Sequence[SecretReference]) -> tuple[ResolvedSecret, ...]:
         self._answering()

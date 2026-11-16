@@ -280,6 +280,7 @@ async fn no_token_passphrase_or_key_reaches_the_database_the_logs_or_the_replies
             ca: stack.ca.clone(),
             identities: stack.identities.clone(),
             policies: stack.policies.clone(),
+            access: stack.access.clone(),
             changed: Arc::new(move || runtime.block_on(ticking.tick()).unwrap()),
         },
     ));

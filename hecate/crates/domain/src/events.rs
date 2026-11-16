@@ -881,6 +881,92 @@ impl PolicyEvent {
     }
 }
 
+// The events of the list of access of an app (data-model): one stream per app, `access/<app>`,
+// that exists only once the admin has changed something in it. None carries a secret.
+
+/// The events of the list of access of an app (stream `access/<app>`): an identity that may call
+/// the app, granted and revoked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AccessEvent {
+    CallerGranted {
+        at: OffsetDateTime,
+        caller: IdentityName,
+        by: ChangedBy,
+    },
+    CallerRevoked {
+        at: OffsetDateTime,
+        caller: IdentityName,
+        by: ChangedBy,
+    },
+}
+
+impl AccessEvent {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::CallerGranted { .. } => "CallerGranted",
+            Self::CallerRevoked { .. } => "CallerRevoked",
+        }
+    }
+
+    pub fn at(&self) -> OffsetDateTime {
+        match self {
+            Self::CallerGranted { at, .. } | Self::CallerRevoked { at, .. } => *at,
+        }
+    }
+
+    pub fn by(&self) -> ChangedBy {
+        match self {
+            Self::CallerGranted { by, .. } | Self::CallerRevoked { by, .. } => *by,
+        }
+    }
+
+    /// The identity that may call the app, or may no longer.
+    pub fn caller(&self) -> &IdentityName {
+        match self {
+            Self::CallerGranted { caller, .. } | Self::CallerRevoked { caller, .. } => caller,
+        }
+    }
+
+    pub fn encode(&self) -> EventRecord {
+        EventRecord {
+            kind: self.kind().to_string(),
+            data: event_data(vec![
+                ("caller", Value::from(self.caller().as_str())),
+                ("by", Value::from(self.by().as_str())),
+            ]),
+            at: self.at(),
+        }
+    }
+
+    pub fn decode(record: &EventRecord) -> Result<Self, InvalidEvents> {
+        let at = record.at;
+        let fields = || Fields::exactly(record, &["caller", "by"]);
+        let caller = |fields: &Fields<'_>| {
+            IdentityName::parse(&fields.text("caller")?).map_err(|_| invalid_field())
+        };
+        let by = |fields: &Fields<'_>| ChangedBy::parse(&fields.text("by")?);
+        match record.kind.as_str() {
+            "CallerGranted" => {
+                let fields = fields()?;
+                Ok(Self::CallerGranted {
+                    at,
+                    caller: caller(&fields)?,
+                    by: by(&fields)?,
+                })
+            }
+            "CallerRevoked" => {
+                let fields = fields()?;
+                Ok(Self::CallerRevoked {
+                    at,
+                    caller: caller(&fields)?,
+                    by: by(&fields)?,
+                })
+            }
+            _ => Err(InvalidEvents("unknown access event")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::Value;
@@ -1360,6 +1446,75 @@ mod tests {
                 record("IdentityEnabled", serde_json::json!({})),
             ] {
                 assert!(PolicyEvent::decode(&bad).is_err(), "{bad:?}");
+            }
+        }
+
+        #[test]
+        fn access_events_round_trip_with_their_caller_and_who_changed_them() {
+            let caller = IdentityName::parse("hades").unwrap();
+            let by = ChangedBy::Admin;
+            for (event, data) in [
+                (
+                    AccessEvent::CallerGranted {
+                        at: AT,
+                        caller: caller.clone(),
+                        by,
+                    },
+                    serde_json::json!({"caller": "hades", "by": "admin"}),
+                ),
+                (
+                    AccessEvent::CallerRevoked { at: AT, caller, by },
+                    serde_json::json!({"caller": "hades", "by": "admin"}),
+                ),
+            ] {
+                let encoded = event.encode();
+                assert_eq!(encoded, record(event.kind(), data), "{event:?}");
+                assert_eq!(AccessEvent::decode(&encoded).unwrap(), event);
+                assert_eq!(event.at(), AT);
+                assert_eq!(event.by(), ChangedBy::Admin);
+                assert_eq!(event.caller().as_str(), "hades");
+            }
+            assert_eq!(
+                AccessEvent::CallerGranted {
+                    at: AT,
+                    caller: IdentityName::parse("hades").unwrap(),
+                    by,
+                }
+                .kind(),
+                "CallerGranted"
+            );
+        }
+
+        #[test]
+        fn corrupt_access_events_are_rejected() {
+            for bad in [
+                record("CallerGranted", serde_json::json!({"caller": "hades"})),
+                record(
+                    "CallerGranted",
+                    serde_json::json!({"caller": "hades", "by": "hecate"}),
+                ),
+                record(
+                    "CallerGranted",
+                    serde_json::json!({"caller": "hades/integration/x", "by": "admin"}),
+                ),
+                record(
+                    "CallerGranted",
+                    serde_json::json!({"caller": "Hades", "by": "admin"}),
+                ),
+                record(
+                    "CallerRevoked",
+                    serde_json::json!({"caller": "hades", "by": "admin", "secret": "x"}),
+                ),
+                record(
+                    "CallerRevoked",
+                    serde_json::json!({"caller": 1, "by": "admin"}),
+                ),
+                record(
+                    "ReadGranted",
+                    serde_json::json!({"caller": "hades", "by": "admin"}),
+                ),
+            ] {
+                assert!(AccessEvent::decode(&bad).is_err(), "{bad:?}");
             }
         }
     }

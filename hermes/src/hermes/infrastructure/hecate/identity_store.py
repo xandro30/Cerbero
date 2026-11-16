@@ -1,7 +1,8 @@
 """The identity of Hermes in files (research R4, R2).
 
 - The state directory (`HERMES_STATE_DIR`, 0700, files 0600) keeps the metadata, the call key of each generation, the
-  renewal in flight and the last publications of Hécate. Envoy never sees it.
+  renewal in flight and the last publications of Hécate, with the copy of the access list of Hermes. Envoy never sees
+  it.
 - The proxy directory (`HERMES_PROXY_DIR`) keeps each certificate in `gen-<n>/` (`tls.crt` with the certificate and
   its intermediate, `tls.key` and `ca.crt`), and the link `current` is replaced at once, with a rename, so Envoy reloads
   it without a restart. Only the current generation and the previous one stay.
@@ -24,6 +25,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
 from hermes.application.ports import (
+    AccessList,
     IssuedCertificate,
     PendingRenewal,
     PublishedKeys,
@@ -207,3 +209,24 @@ class FileIdentityStore:
         self._prepare()
         data = {"keys": [dict(key) for key in keys.keys], "expires_at": keys.expires_at.isoformat()}
         self._write(self.state_dir / "keys.json", json.dumps(data))
+
+    def load_access(self) -> AccessList | None:
+        data = self._read_json(self.state_dir / "access.json")
+        if data is None:
+            return None
+        return AccessList(
+            app=data["app"],
+            callers=tuple(data["callers"]),
+            version=data["version"],
+            fetched_at=datetime.fromisoformat(data["fetched_at"]),
+        )
+
+    def save_access(self, access: AccessList) -> None:
+        self._prepare()
+        data = {
+            "app": access.app,
+            "callers": list(access.callers),
+            "version": access.version,
+            "fetched_at": access.fetched_at.isoformat(),
+        }
+        self._write(self.state_dir / "access.json", json.dumps(data))

@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use hecate_application::access_policy::service::AccessPolicyService;
+use hecate_application::app_access::service::AppAccessService;
 use hecate_application::ca::service::{CaService, random_serial};
 use hecate_application::ca::settings::CaSettings;
 use hecate_application::identity::service::IdentityService;
@@ -122,6 +123,11 @@ pub enum Command {
         #[command(subcommand)]
         command: PoliciesCommand,
     },
+    /// Manage the lists of access: which identities may call each app
+    Access {
+        #[command(subcommand)]
+        command: AccessCommand,
+    },
     /// Seal now: the root leaves memory
     Seal,
     /// Show the seal state
@@ -228,6 +234,18 @@ pub enum PoliciesCommand {
     List,
     /// Show the policy of an identity and its history
     Get { identity: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AccessCommand {
+    /// Let an identity call an app
+    Grant { identity: String, app: String },
+    /// Stop an identity from calling an app
+    Revoke { identity: String, app: String },
+    /// List the apps whose list of access has changed
+    List,
+    /// Show the list of access of an app and its history
+    Get { app: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -339,6 +357,7 @@ pub fn execute(command: Command, config: &HecateConfig, terminal: &mut dyn Termi
             command: CertificatesCommand::Revoke { serial, urgent },
         } => Ok(certificates_revoke(config, terminal, &serial, urgent)),
         Command::Policies { command } => Ok(policies(config, terminal, command)),
+        Command::Access { command } => Ok(access(config, terminal, command)),
         Command::Seal => Ok(seal(config, terminal)),
         Command::Status => Ok(status(config, terminal)),
         Command::Secrets { command } => secrets(config, terminal, command),
@@ -618,10 +637,12 @@ fn yes_no(value: &Value) -> &'static str {
     if truthy(value) { "yes" } else { "no" }
 }
 
-/// The line that an order of the Access Policy prints, from the data of its reply.
+/// The line that an order of the Access Policy or of the lists of access prints, from the data
+/// of its reply.
 type OrderLine = fn(&Value) -> String;
 
-/// An order of the Access Policy: the line of what it changed, or of `unchanged`.
+/// An order of the Access Policy or of the lists of access: the line of what it changed, or of
+/// `unchanged`.
 fn policy_order(
     config: &HecateConfig,
     terminal: &mut dyn Terminal,
@@ -788,6 +809,106 @@ fn policies(config: &HecateConfig, terminal: &mut dyn Terminal, command: Policie
                     text(change, "version"),
                     text(change, "at"),
                     text(change, "change"),
+                    text(change, "by")
+                ));
+            }
+            0
+        }
+    }
+}
+
+/// `hecate access` (contracts/cli.md): the orders and queries of the admin on the lists of access
+/// of the apps.
+fn access(config: &HecateConfig, terminal: &mut dyn Terminal, command: AccessCommand) -> i32 {
+    let text = |data: &Value, key: &str| shown(field(data, key));
+    match command {
+        AccessCommand::Grant { identity, app } => policy_order(
+            config,
+            terminal,
+            "access.grant",
+            json!({"identity": identity, "app": app}),
+            (
+                |data| {
+                    format!(
+                        "granted {} access to {} (access version {})",
+                        shown(field(data, "identity")),
+                        shown(field(data, "app")),
+                        shown(field(data, "version"))
+                    )
+                },
+                |data| {
+                    format!(
+                        "unchanged: {} already calls {}",
+                        shown(field(data, "identity")),
+                        shown(field(data, "app"))
+                    )
+                },
+            ),
+        ),
+        AccessCommand::Revoke { identity, app } => policy_order(
+            config,
+            terminal,
+            "access.revoke",
+            json!({"identity": identity, "app": app}),
+            (
+                |data| {
+                    format!(
+                        "revoked {} access to {} (access version {})",
+                        shown(field(data, "identity")),
+                        shown(field(data, "app")),
+                        shown(field(data, "version"))
+                    )
+                },
+                |data| {
+                    format!(
+                        "unchanged: {} does not call {}",
+                        shown(field(data, "identity")),
+                        shown(field(data, "app"))
+                    )
+                },
+            ),
+        ),
+        AccessCommand::List => {
+            let Some(data) = call(config, terminal, "access.list", json!({})) else {
+                return 1;
+            };
+            let listed = items(&data, "apps");
+            if listed.is_empty() {
+                terminal.out("no access lists");
+            }
+            for list in &listed {
+                terminal.out(&format!(
+                    "{} version {} callers {}",
+                    text(list, "app"),
+                    text(list, "version"),
+                    text(list, "callers")
+                ));
+            }
+            0
+        }
+        AccessCommand::Get { app } => {
+            let Some(data) = call(config, terminal, "access.get", json!({"app": app})) else {
+                return 1;
+            };
+            terminal.out(&format!(
+                "access {} version {}",
+                text(&data, "app"),
+                text(&data, "version")
+            ));
+            for caller in &items(&data, "callers") {
+                terminal.out(&format!("caller {}", shown(caller)));
+            }
+            let history = items(&data, "history");
+            if !history.is_empty() {
+                terminal.out("history");
+            }
+            for change in &history {
+                terminal.out(&format!(
+                    "{} {} {} {} by {}",
+                    text(change, "version"),
+                    text(change, "at"),
+                    text(change, "change"),
+                    text(change, "caller"),
                     text(change, "by")
                 ));
             }
@@ -1741,10 +1862,17 @@ fn serve(config: &HecateConfig, terminal: &mut dyn Terminal) -> i32 {
         access_log.clone(),
         Arc::new(SystemClock),
     ));
+    let access = Arc::new(AppAccessService::new(
+        service.clone(),
+        identity_store.clone(),
+        access_log.clone(),
+        Arc::new(SystemClock),
+    ));
     let identities = Arc::new(IdentityService::new(
         service.clone(),
         ca.clone(),
         policies.clone(),
+        access.clone(),
         secrets.clone(),
         identity_store,
         Arc::new(enroll_attempts),
@@ -1782,6 +1910,7 @@ fn serve(config: &HecateConfig, terminal: &mut dyn Terminal) -> i32 {
                         ca: ca.clone(),
                         identities: identities.clone(),
                         policies: policies.clone(),
+                        access: access.clone(),
                         changed,
                     },
                 ));

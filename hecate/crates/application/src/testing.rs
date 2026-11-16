@@ -734,6 +734,7 @@ impl EnrollAttemptsRepository for InMemoryEnrollAttempts {
 }
 
 use crate::access_policy::service::AccessPolicyService;
+use crate::app_access::service::AppAccessService;
 use crate::ca::service::CaService;
 use crate::ca::settings::CaSettings;
 use crate::identity::service::IdentityService;
@@ -744,9 +745,9 @@ use crate::ports::{CallTokenVerifier, PkiProvider};
 pub type SecretStoreWrap<'a> =
     dyn FnOnce(Arc<InMemorySecretStore>, Arc<SealingService>) -> Arc<dyn SecretStore> + 'a;
 
-/// An initialized and unsealed Hécate with the services of the CA, the identities, the secrets
-/// and the Access Policy over the in-memory doubles; the PKI and the verifier of short call tokens
-/// are the caller's, since the real ones live in the infrastructure.
+/// An initialized and unsealed Hécate with the services of the CA, the identities, the secrets,
+/// the Access Policy and the lists of access over the in-memory doubles; the PKI and the verifier
+/// of short call tokens are the caller's, since the real ones live in the infrastructure.
 pub struct CaRig {
     pub crypto: Arc<dyn CryptoProvider>,
     pub pki: Arc<dyn PkiProvider>,
@@ -759,6 +760,7 @@ pub struct CaRig {
     pub service: Arc<CaService>,
     pub identities: Arc<IdentityService>,
     pub policies: Arc<AccessPolicyService>,
+    pub access: Arc<AppAccessService>,
     pub secrets_store: Arc<InMemorySecretStore>,
     pub secrets: Arc<SecretsService>,
     /// The three recovery shares of the initialization.
@@ -894,10 +896,17 @@ impl CaRig {
             access_log.clone(),
             clock.clone(),
         ));
+        let access = Arc::new(AppAccessService::new(
+            sealing.clone(),
+            store.clone(),
+            access_log.clone(),
+            clock.clone(),
+        ));
         let identities = Arc::new(IdentityService::new(
             sealing.clone(),
             service.clone(),
             policies.clone(),
+            access.clone(),
             secrets.clone(),
             store.clone(),
             attempts.clone(),
@@ -920,6 +929,7 @@ impl CaRig {
             service,
             identities,
             policies,
+            access,
             secrets_store,
             secrets,
             shares,

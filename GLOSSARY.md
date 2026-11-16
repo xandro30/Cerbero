@@ -121,6 +121,7 @@ Ver también: [README](README.md) · [ARCHITECTURE](ARCHITECTURE.md)
 | **Profile** | Orthros | Tipología de equipo (Linux, macOS, Windows, Android, iOS, IoT...). Determina qué Policy recibe un Agent. |
 | **Policy** | Orthros | Configuración versionada y firmada que Orthros publica para un Profile: Flags, Filters, Aggregations y Parsers. |
 | **Access Policy** | Hécate | Lo que una identidad puede usar además de sus propios secretos (`secret://<su identidad>/**`, la regla por defecto, que no se guarda): las excepciones del admin, cada una para leer un secreto concreto de otra identidad, sin comodines; el permiso de estado, que deja consultar los recuentos agregados de Hécate; y los permisos que salen de lo que declaran instancias e integraciones. Versionada, con quién hizo cada cambio. No confundir con la Policy de Orthros. |
+| **App Access** | Hécate, Hermes | La lista de acceso de una app: las identidades de app que pueden llamarla, a la app entera y sin permisos por función. La guarda Hécate, versionada y con quién hizo cada cambio; cada app consulta la suya y la aplica tras autenticar a quien llama. Sin nadie en ella, nadie la llama, y el token corto no concede ningún acceso. |
 | **Flag** | Orthros | Activación o desactivación de un Sensor dentro de una Policy. |
 | **Filter** | Orthros | Regla de descarte ejecutada en el Agent para no enviar datos de bajo valor. |
 | **Aggregation** | Orthros | Regla que resume en el Agent eventos repetidos en un único registro con contador. |
