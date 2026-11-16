@@ -1,4 +1,5 @@
-"""The client of Hécate against a real Hécate (T060), launched from `HECATE_BIN` with certificates of one hour."""
+"""The client of Hécate against a real Hécate (T060), launched from `HECATE_BIN` with certificates of one hour; and the
+access list of Hermes, with its copy on disk (T026 of 009)."""
 
 from __future__ import annotations
 
@@ -120,11 +121,34 @@ async def test_the_crls_and_the_published_keys_are_read(hermes: Hermes) -> None:
     assert (await hermes.client.key(identity.certificate.call_key_id))["kid"] == identity.certificate.call_key_id
 
 
+async def test_the_access_list_is_empty_without_grants_and_has_the_caller_after_a_grant(
+    prepared: RunningHecate, hermes: Hermes
+) -> None:
+    empty = await hermes.client.callers()
+    assert (empty.app, empty.callers, empty.version) == ("hermes", (), 0)
+    prepared.grant_access("caller")
+    try:
+        granted = await hermes.client.callers()
+        assert (granted.app, granted.callers, granted.version) == ("hermes", ("caller",), 1)
+        await hermes.identity.refresh_publications()
+        saved = hermes.store.load_access()
+        assert saved is not None
+        assert (saved.callers, saved.version) == (("caller",), 1)
+        material = hermes.identity.material()
+        assert material is not None
+        assert material.access == saved
+    finally:
+        prepared.revoke_access("caller")
+
+
 async def test_with_hecate_sealed_the_calls_are_unavailable(prepared: RunningHecate, hermes: Hermes) -> None:
     prepared.seal()
     try:
         with pytest.raises(HermesError) as raised:
             await hermes.client.resolve([SecretReference.parse(BOT_TOKEN_REF)])
+        assert raised.value.code is ErrorCode.UNAVAILABLE
+        with pytest.raises(HermesError) as raised:
+            await hermes.client.callers()
         assert raised.value.code is ErrorCode.UNAVAILABLE
     finally:
         prepared.unseal()

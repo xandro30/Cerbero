@@ -1,6 +1,6 @@
 # Hermes — librerías de terceros con contrato
 
-*En la mitología, el mensajero que viaja entre los mundos.* · Última revisión: 2026-11-15
+*En la mitología, el mensajero que viaja entre los mundos.* · Última revisión: 2026-11-16
 
 Ver también: [ARCHITECTURE](../ARCHITECTURE.md) (visión transversal) · [GLOSSARY](../GLOSSARY.md) · [DECISIONS](../DECISIONS.md) · [Hades](hades.md) · [Hécate](hecate.md)
 
@@ -31,7 +31,7 @@ flowchart LR
     Admin -- "CLI por el canal local: configuración, códigos, salud" --> Hermes
     Repo[(Repositorio privado)] -- "librerías propias" --> Hermes
     Hermes -- "API de cada proveedor (polling)" --> Proveedores[Telegram, Jira, VirusTotal...]
-    Hermes -- "identidad, claves publicadas, secretos, firma de checkpoints" --> Hecate[Hécate]
+    Hermes -- "identidad, claves publicadas, lista de acceso, secretos, firma de checkpoints" --> Hecate[Hécate]
     Hermes -- "configuración y lo que escribe al funcionar" --> DB[(PostgreSQL común)]
 ```
 
@@ -42,7 +42,7 @@ flowchart LR
 | **Admin** (CLI de Hermes, en su equipo) | La configuración entera, las peticiones de códigos de verificación y las consultas de salud | Los cambios, la configuración exportada, el código y si está listo |
 | **Repositorio privado** | Las librerías de proveedor propias | — |
 | **Proveedores** | Sus respuestas, y lo que llega a sus bots por polling | Las llamadas traducidas a su API |
-| **Hécate** | Su certificado y sus renovaciones, las listas de revocación, las claves de firma de llamadas, los secretos de las instancias y de su base, la firma de checkpoints | — |
+| **Hécate** | Su certificado y sus renovaciones, las listas de revocación, las claves de firma de llamadas, su lista de acceso, los secretos de las instancias y de su base, la firma de checkpoints | — |
 | **PostgreSQL común** | — | Su configuración, la verificación de los canales, las claves de idempotencia, los `jti` usados y la auditoría, en su propia base |
 
 Toda la comunicación entre componentes es por API, con el contrato común de Cerbero. Hades nunca lee los streams de Hermes: consulta. La gestión no va por la API: va por el canal local.
@@ -130,7 +130,7 @@ sequenceDiagram
     participant P as Proveedor
     H->>E: POST /chat/v1/send_message (mTLS, token corto, Idempotency-Key)
     E->>M: la petición por el socket Unix, con el certificado de H
-    M->>M: autenticar; clave de idempotencia; validar contra el contrato
+    M->>M: autenticar y comprobar el acceso; clave de idempotencia; validar contra el contrato
     M->>M: límite de la instancia; resolver su secreto; reservar la clave
     M->>P: llamada en el formato del proveedor
     P-->>M: respuesta nativa
@@ -239,7 +239,7 @@ Envía un mensaje a un contacto por un canal de chat verificado: `command`, sín
 
 - **Petición:** `recipients` (una lista con exactamente un contacto), `template` (`id` y `version` opcional, sin ella la última), `data` (que cumple el esquema de esa versión) e `instance` (opcional; sin ella, el único canal de chat del contacto).
 - **Respuesta:** `recipient`, `instance`, `provider_message_ref`, `sent_at` y `truncated` (si se recortó el detalle); nunca la dirección del contacto.
-- **Orden de las comprobaciones:** autenticación (`auth`); cuerpo y clave (`validation`); clave de idempotencia (`conflict`, la misma respuesta o `timeout`); plantilla, versión, instancia y contacto (`not_found`, o `validation` si los datos no cumplen); canal sin verificar (`conflict`); límite de la instancia (`rate_limited`); secreto pasado su tiempo duro (`internal`); proveedor. Sin estar listo, `unavailable` antes de todo; con su base caída, la autenticación comprueba el certificado y el token pero no puede guardar el `jti`, así que una llamada válida responde `unavailable` sin llegar al proveedor, y una que no se autentica, `auth`.
+- **Orden de las comprobaciones:** autenticación y acceso (`auth`); cuerpo y clave (`validation`); clave de idempotencia (`conflict`, la misma respuesta o `timeout`); plantilla, versión, instancia y contacto (`not_found`, o `validation` si los datos no cumplen); canal sin verificar (`conflict`); límite de la instancia (`rate_limited`); secreto pasado su tiempo duro (`internal`); proveedor. Sin estar listo, `unavailable` antes de todo; con su base caída, la autenticación comprueba el certificado, el token y el acceso pero no puede guardar el `jti`, así que una llamada válida responde `unavailable` sin llegar al proveedor, y una que no se autentica, `auth`.
 
 ### Autenticación
 
@@ -247,9 +247,11 @@ Todas las operaciones exigen el certificado de cliente de un componente de Cerbe
 
 1. que la cadena llega a la CA raíz vigente de Hécate, que el certificado tiene como único nombre un SPIFFE ID de su trust domain, que no ha caducado y que su serie no está en la lista de revocación de su intermedia;
 2. que el token lo firmó una clave de firma de llamadas activa de la identidad del certificado, de las que publica Hécate; si aún no la tiene, porque el componente se acaba de dar de alta o de renovar, se la pide a Hécate;
-3. que `iss` es el SPIFFE ID del certificado y `aud` el de Hermes, que vive 300 s como mucho, con 30 s de margen entre relojes, y que su `jti` no se ha usado antes, también tras reiniciar.
+3. que `iss` es el SPIFFE ID del certificado y `aud` el de Hermes, y que vive 300 s como mucho, con 30 s de margen entre relojes;
+4. que la identidad del certificado está en su lista de acceso, que guarda Hécate; si no está en su copia, se la vuelve a pedir a Hécate antes de responder, con una sola petición para las llamadas que llegan a la vez, así que una concesión vale en la llamada siguiente; si Hécate no responde, `unavailable`;
+5. y que su `jti` no se ha usado antes, también tras reiniciar: quien no tiene acceso no deja su `jti` guardado.
 
-Cualquier fallo responde `auth` con el mismo mensaje; el motivo solo va al log. El token puede llevar el contexto de auditoría en `cerbero_audit` (hasta 16 claves de texto con valores de texto, 2 KiB como mucho), que Hermes guarda tal cual en la auditoría. Hermes no toma ningún permiso del token: el acceso a una app lo guarda Hécate ([ADR 0013](adr/0013-acceso-por-app.md)).
+Cualquier fallo responde `auth` con el mismo mensaje; el motivo solo va al log (`auth.refused`, con el `request_id` de la petición; `not_allowed` si quien llama no tiene acceso). El token puede llevar el contexto de auditoría en `cerbero_audit` (hasta 16 claves de texto con valores de texto, 2 KiB como mucho), que Hermes guarda tal cual en la auditoría. Hermes no toma ningún permiso del token: lo que diga sobre permisos, roles o accesos no cuenta, y decide con la lista de Hécate ([ADR 0013](adr/0013-acceso-por-app.md)). Sin nadie en ella, no atiende a nadie.
 
 ### API
 
@@ -383,7 +385,7 @@ hermes/src/hermes/
 | DDD | Lo común: sobre, contratos, configuración, Task, contactos | Mismo lenguaje y mismas reglas en todos los proveedores |
 | Event Sourcing + CQRS | La Task y su proyección `task-status` | El stream de la task es su historia; Hades consulta la proyección |
 
-Un solo proceso asyncio con la API, el canal local y las tareas de fondo: la renovación del certificado, el refresco de las publicaciones de Hécate cada 240 s, el de la contraseña de la base, la limpieza de las claves de idempotencia y de los `jti`, y un polling por instancia ([ADR 0011](adr/0011-pila-hermes.md)).
+Un solo proceso asyncio con la API, el canal local y las tareas de fondo: la renovación del certificado, el refresco de las publicaciones de Hécate cada 240 s (la lista de revocación, las claves publicadas y su lista de acceso), el de la contraseña de la base, la limpieza de las claves de idempotencia y de los `jti`, y un polling por instancia ([ADR 0011](adr/0011-pila-hermes.md)).
 
 ---
 
@@ -398,6 +400,7 @@ Un solo proceso asyncio con la API, el canal local y las tareas de fondo: la ren
 | Event store de las tasks | Base de datos de Hermes | Sí |
 | Librerías propias | Repositorio privado (ruta `hermes/`); se cambian por PR desde Ténaro | Es el propio repositorio |
 | Identidad: clave de firma de llamadas, metadatos, renovación en curso y últimas publicaciones de Hécate | Directorio de estado (`HERMES_STATE_DIR`), 0700 con ficheros 0600 | Se recupera con un alta nueva |
+| Copia de su lista de acceso: las identidades que pueden llamarlo, la versión y cuándo la obtuvo (`access.json`) | Directorio de estado, 0600 | Se vuelve a pedir a Hécate |
 | Certificado, cadena, clave TLS y CA raíz | Directorio del proxy (`HERMES_PROXY_DIR`), en `gen-<n>/` con el enlace `current`; lo lee Envoy | Se recupera con un alta nueva |
 | Secretos resueltos, estado de las instancias, fichas de los límites, cerrojos de las claves, cursores del polling | Memoria | No: se reconstruyen o se empieza desde "ahora" |
 | Código, contratos y manifiestos de las librerías oficiales | Repositorio de Cerbero; no se editan desde Ténaro | Es el propio repositorio |
@@ -410,9 +413,9 @@ Un solo proceso asyncio con la API, el canal local y las tareas de fondo: la ren
 
 ## 9. Seguridad
 
-- **Identidad:** `spiffe://cerbero.home/hermes`, con un alta con token de un solo uso (`hermes enroll`), renovación a los dos tercios repitiendo la misma petición si se pierde la respuesta, y las listas de revocación y las claves publicadas de Hécate refrescadas cada 240 s; la última copia vale mientras Hécate no responde. Hermes habla con Hécate con TLS fijado a la CA raíz guardada y comprueba que el servidor es `spiffe://<trust domain>/hecate` antes de enviar nada. Ver [Identidad y seguridad](../ARCHITECTURE.md#6-identidad-y-seguridad).
+- **Identidad:** `spiffe://cerbero.home/hermes`, con un alta con token de un solo uso (`hermes enroll`), renovación a los dos tercios repitiendo la misma petición si se pierde la respuesta, y las listas de revocación, las claves publicadas y su lista de acceso refrescadas cada 240 s; la última copia vale mientras Hécate no responde. Hermes habla con Hécate con TLS fijado a la CA raíz guardada y comprueba que el servidor es `spiffe://<trust domain>/hecate` antes de enviar nada. Ver [Identidad y seguridad](../ARCHITECTURE.md#6-identidad-y-seguridad).
 - **Proxy:** Envoy termina el mTLS (TLS 1.3), pide el certificado de cliente sin rechazar ninguno y se lo reenvía a Hermes en `X-Forwarded-Client-Cert`, sustituyendo la que traiga la petición; Hermes valida la cadena, la revocación y el token y responde `auth` en el sobre. Hermes no escucha en ningún puerto: su API es un socket Unix 0600 que solo alcanza Envoy, y el token se liga a la identidad que declara el proxy ([riesgo aceptado](../DECISIONS.md#riesgos-aceptados), [ADR 0011](adr/0011-pila-hermes.md)).
-- **Acceso:** Hermes autentica cada llamada ([Autenticación](#autenticación)); qué identidades pueden llamar a cada app lo guarda Hécate ([ADR 0013](adr/0013-acceso-por-app.md)).
+- **Acceso:** tras autenticar cada llamada, Hermes solo atiende a las identidades de su lista de acceso, que guarda Hécate; sin nadie en ella, no atiende a nadie ([Autenticación](#autenticación), [ADR 0013](adr/0013-acceso-por-app.md)). El canal local no usa la lista: su seguridad es el acceso local.
 - **Superficies:** la API de servicios, solo para los componentes internos y a través de Envoy; la gestión y la salud, por el canal local, un socket en un directorio 0700 sin superficie de red. Nada de Hermes se expone directamente a internet.
 - **Secretos** como referencias `secret://hermes/<proveedor>/<instancia>/<campo>`, y la contraseña de su base como `secret://hermes/postgres/password`, resueltos al ejecutar y nunca en logs, eventos, la base ni lo exportado. La caché los refresca a los 5 minutos y los olvida a la hora: con Hécate sin responder, Hermes sigue con el último valor hasta entonces, y después falla con `internal` sin llegar al proveedor.
 - **Auditoría:** el registro append-only guarda el contexto que propaga quien llama (`cerbero_audit`: `source`, Response, Playbook o Job, owner / maintainer o la persona) y la clave de idempotencia. La gestión también queda registrada, con `actor: admin`. Cada entrada va en la misma transacción que el cambio que registra: si no se puede escribir, el cambio no queda. Los checkpoints de la auditoría los firma Hécate.
@@ -426,12 +429,13 @@ Un solo proceso asyncio con la API, el canal local y las tareas de fondo: la ren
 |---|---|---|
 | Hermes | Hades no puede llamar a los servicios con contrato: el bloque falla y se reintenta según el Playbook. Las tasks ya aceptadas no se pierden | Hermes retoma las tasks no terminales desde su event store |
 | Un proveedor | Hermes reintenta lo seguro; si no, devuelve `provider_unavailable`, `rate_limited` o `timeout` | El estado de la instancia lo refleja en `/v1/capabilities` |
-| Hécate | Hermes sigue con la caché de secretos (hasta 1 h) y con las últimas publicaciones; después, las llamadas que necesitan un secreto fallan con `internal` | Desbloquear Hécate |
+| Hécate | Hermes sigue con la caché de secretos (hasta 1 h) y con las últimas publicaciones, su lista de acceso incluida: nadie gana el acceso ni lo pierde por ello, y quien no está en su copia recibe `unavailable`. Pasada la hora, las llamadas que necesitan un secreto fallan con `internal` | Desbloquear Hécate |
 | Su base de datos | Hermes no está listo y los envíos responden `unavailable`: no envía nada que no pueda registrar | Nada: vuelve en cuanto la base responde |
 | Su identidad (caducada, revocada o con otra CA) | Hermes no está listo y lo dice | Un token de alta nuevo y `hermes enroll` |
 
-- **Arranque:** abre sus dos sockets, así que la salud responde desde el principio; después sigue sus pasos (identidad, publicaciones de Hécate, contraseña de la base, conexión, migraciones, configuración, prueba de cada instancia y polling) y no está listo hasta terminarlos. Un paso que falla se reintenta, y sin identidad espera a `hermes enroll`.
-- **Salud:** por el canal local, fuera de la API: `hermes health` dice si está listo o por qué no (`needs a new enrollment token`, `database unavailable` o `configuration not loaded`), y `hermes health --live`, que el proceso responde, para el healthcheck del contenedor.
+- **Arranque:** abre sus dos sockets, así que la salud responde desde el principio; después sigue sus pasos (identidad, publicaciones de Hécate con su lista de acceso, contraseña de la base, conexión, migraciones, configuración, prueba de cada instancia y polling) y no está listo hasta terminarlos. Un paso que falla se reintenta, y sin identidad espera a `hermes enroll`.
+- **Salud:** por el canal local, fuera de la API: `hermes health` dice si está listo o por qué no (`needs a new enrollment token`, `access list not loaded`, `database unavailable` o `configuration not loaded`), y `hermes health --live`, que el proceso responde, para el healthcheck del contenedor.
+- **Accesos:** antes de que un componente llame a Hermes, el admin le concede el acceso en Hécate (`hecate access grant <identidad> hermes`); sin nadie en su lista, Hermes no atiende a nadie. Una concesión vale en la llamada siguiente, y una retirada (`hecate access revoke`), en el siguiente refresco, como mucho a los 240 s.
 - **Estado por instancia** (`healthy`, `degraded` o `unavailable`) en `/v1/capabilities`, calculado de las últimas diez llamadas y de la última prueba de conexión: `unavailable` si falló la última prueba, si el proveedor rechazó las credenciales (hasta que una prueba funcione) o si fallaron las tres últimas llamadas; `degraded` si falló alguna de las diez. Al arrancar, Hermes prueba cada instancia.
 - **Observabilidad con OpenTelemetry:** trazas Hades → Hermes → proveedor; métricas por servicio, función, proveedor e instancia (latencia, errores, reintentos, límites alcanzados, duración de las tasks); logs con `correlation_id`, `causation_id`, `task_id` y clave de idempotencia.
 - **Avisos:** un cronjob de Hades consulta `/v1/capabilities` y emite señales (instancia caída, versión deprecada); un Playbook secundario avisa al maintainer.
@@ -446,7 +450,7 @@ Un solo proceso asyncio con la API, el canal local y las tareas de fondo: la ren
 - **Proveedores `fake`** por tipo de servicio para los entornos funcionales completos y la CI: los Playbooks se prueban sin tocar los servicios reales.
 - **API:** cada respuesta que reciben las pruebas, también las de error, se valida contra el OpenAPI publicado.
 - **Hécate real:** las pruebas del cliente de Hécate y el E2E usan el binario compilado del repositorio.
-- **E2E en contenedores:** el compose de `hermes/deploy/`, con PostgreSQL, una Hécate de pruebas, Hermes con el fake y Envoy, y un cliente de referencia que se da de alta y llama como un componente. Es un entorno de pruebas: no fija cómo corre Hermes en el home lab.
+- **E2E en contenedores:** el compose de `hermes/deploy/`, con PostgreSQL, una Hécate de pruebas, Hermes con el fake y Envoy, y un cliente de referencia que se da de alta y llama como un componente, con el acceso que le concede el admin. Es un entorno de pruebas: no fija cómo corre Hermes en el home lab.
 - **Fugas:** una prueba busca tokens, códigos, direcciones y certificados, en claro y codificados, en los logs, las respuestas, la auditoría, lo exportado y la base.
 
 ---

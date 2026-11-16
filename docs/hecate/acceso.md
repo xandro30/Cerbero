@@ -1,9 +1,10 @@
 # Acceso en Hécate
 
-Quién puede leer qué en Hécate. Este documento desarrolla la Access Policy de cada identidad (sus propios secretos por
-defecto y las excepciones que el admin comparte, secreto a secreto), los permisos que salen de las declaraciones, el
-acceso por app, la resolución de secretos por la API con sus rechazos, que no se distinguen ni por su contenido ni por su tiempo, y el
-permiso de estado. Es para quien quiere entender o revisar el diseño; cómo resuelve un componente está en la
+Quién puede leer qué en Hécate, y quién puede llamar a cada app. Este documento desarrolla la Access Policy de cada
+identidad (sus propios secretos por defecto y las excepciones que el admin comparte, secreto a secreto), los permisos
+que salen de las declaraciones, el acceso por app con su lista y su consulta, la resolución de secretos por la API con
+sus rechazos, que no se distinguen ni por su contenido ni por su tiempo, y el permiso de estado. Es para quien quiere
+entender o revisar el diseño; cómo resuelve un componente, y cómo aplica una app su lista, está en la
 [guía de integración](integracion.md).
 
 ## La Access Policy
@@ -37,11 +38,34 @@ permiso de lectura a su identidad. Una referencia fuera de su ámbito se rechaza
 
 ## El acceso por app
 
-Hécate guarda también qué identidades pueden llamar a cada app, como Hermes ([ADR 0013](../adr/0013-acceso-por-app.md)):
+Hécate guarda también qué identidades pueden llamar a cada app, como Hermes ([ADR 0013](../adr/0013-acceso-por-app.md)).
+La app autentica a quien la llama con su certificado y su token corto, y decide con esta lista si lo atiende.
 
-- el acceso es a la app entera, sin permisos por función;
-- el token corto no concede acceso: lo firma quien llama, así que lo que diga sobre lo que puede hacer no prueba nada;
-- la app autentica a quien la llama con su certificado y su token corto, y decide el acceso con la lista de Hécate.
+- **A la app entera:** sin permisos por función.
+- **Denegado por defecto:** una app sin nadie en su lista no atiende a nadie, también si nunca se le ha concedido nada.
+  Hécate no trae ningún acceso concedido: antes de que una app aplique su lista, el admin concede los que hagan falta.
+- **El token corto no concede nada:** lo firma quien llama, así que lo que diga sobre permisos, roles o accesos no
+  cuenta.
+- **Solo identidades de app:** la app y quien llama siguen la regla de nombres de las identidades, con un solo segmento;
+  ninguna de las dos es `hecate` ni `admin`, y una app no recibe acceso a sí misma. Se puede conceder a una identidad, o
+  para una app, que aún no se ha dado de alta: vale desde que se da de alta.
+- **Las identidades hijas** no figuran en la lista: cuentan como su app, aquella de la que son hijas. Lo que alcanza
+  cada una dentro de la app de destino está [abierto](../../DECISIONS.md#abiertas).
+
+| Aggregate | Qué es | Estados |
+|---|---|---|
+| **App Access** | La lista de acceso de una app: las identidades que pueden llamarla | Versionada: cada cambio, con quién y cuándo |
+
+- Es un aggregate event-sourced por app, en el stream `access/<app>`, con los eventos `CallerGranted` y `CallerRevoked`
+  (la identidad que llama y quién). Sin stream, la lista está vacía en la versión 0. Su historial dice quién podía
+  llamar a la app en cualquier momento pasado.
+- Las órdenes del admin van por el canal local ([`hecate access`](cli.md#acceso-por-app)) y no llevan versión esperada:
+  conceder lo que ya está concedido, o retirar lo que no lo está, no escribe eventos. Todas exigen Hécate desbloqueada y
+  dejan su fila en el [registro de accesos](auditoria.md#el-registro-de-accesos), también si no cambian nada.
+- **La consulta de cada app:** `GET /v1/callers` da a una app autenticada su lista y su versión, y solo la suya: no
+  tiene parámetros, así que no hay forma de pedir la de otra. Con Hécate sellada responde `unavailable`. Una consulta
+  atendida no deja fila; un rechazo, sí. Cómo la copia y la aplica una app está en la
+  [guía de integración](integracion.md#la-lista-de-acceso-de-una-app).
 
 Los permisos de las personas no están aquí: son del frontal, Ténaro.
 
@@ -115,4 +139,4 @@ aviso. La integridad de la auditoría la vigila su propia [verificación periód
 - [Hécate](../hecate.md): el documento de alto nivel.
 - [Secretos](secretos.md): cómo se guarda lo que se resuelve.
 - [Identidades](identidades.md): cómo se autentica quien resuelve.
-- [Integrar un componente](integracion.md): la resolución y el estado desde el lado del componente.
+- [Integrar un componente](integracion.md): la resolución, el estado y la lista de acceso desde el lado del componente.

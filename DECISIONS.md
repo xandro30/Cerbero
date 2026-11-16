@@ -112,6 +112,19 @@ No hay más desviaciones de lenguaje. Se descartaron `by <d>` (tumbling: se cubr
 | OpenBao, SOPS + age, variables de entorno o Docker secrets como almacén | Se prefiere construirlo para aprender. |
 | Inventar criptografía | Solo primitivas de librerías auditadas; Shamir, sin auditoría pública, es un [riesgo aceptado](#riesgos-aceptados). |
 
+### Acceso por app frente a las mallas de servicios (Istio)
+
+SecOps no tiene un equivalente para la autorización entre servicios. La referencia son las políticas de autorización de
+una malla de servicios, como las de Istio: el servicio de destino deja pasar a las identidades SPIFFE que nombra y
+deniega lo demás.
+
+| Desviación | Justificación |
+|---|---|
+| La lista de cada app la guarda Hécate, y cada app la consulta y la aplica tras autenticar (en Istio, el plano de control reparte las políticas y las aplica el proxy del servidor) | Hécate ya es la fuente de las identidades, y en casa no hay plano de control que operar; Envoy, delante de Hermes, solo termina el mTLS y le reenvía el certificado. |
+| Una app sin nadie en su lista no atiende a nadie (en Istio, un servicio sin políticas `ALLOW` acepta cualquier petición) | Ninguna app queda abierta por defecto: el admin concede antes los accesos que hagan falta. |
+| El acceso es a la app entera, sin reglas por ruta ni por método | Hermes no tiene funciones peligrosas entre sí ([ADR 0013](docs/adr/0013-acceso-por-app.md)); si una app las necesita, se añaden a la lista sin cambiar el token. |
+| Una retirada vale cuando la app refresca su copia, como mucho a los 240 s (en Istio, el plano de control empuja el cambio a los proxies); una concesión, en la llamada siguiente, porque la app vuelve a pedir la lista ante quien no está | Hécate nunca llama a nadie, y la copia es lo que deja a la app seguir con Hécate sellada o caída, como la lista de revocación y las claves publicadas. |
+
 ### Riesgos aceptados
 
 | Riesgo | Por qué se acepta |
@@ -195,7 +208,6 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 | `chat.ask` | Diseñado, no implementado: preguntar con opciones cerradas a uno o varios contactos y que gane la primera respuesta válida, como task; falta su clasificación (consulta con `side_effect`) y el comportamiento con cada proveedor, y el texto libre ([hermes](docs/hermes.md#comunicación-contactos-y-plantillas)). |
 | Tasks de Hermes | Diseñado, no implementado: peticiones asíncronas event-sourced que Hades envía, consulta y cancela por API, con su cola sobre la base de Hermes; las necesitan `chat.ask` y las funciones en modo task ([hermes](docs/hermes.md#task)). |
 | Grupos de contactos | Diseñado, no implementado: un grupo con miembros y entrega `shared_chat` o `fan_out`; hoy `chat.send_message` va a un solo contacto por petición, y el contrato ya recibe una lista ([hermes](docs/hermes.md#instancia-contacto-y-configuración)). |
-| Acceso por app | Decidido ([ADR 0013](docs/adr/0013-acceso-por-app.md)); diseñado, no implementado: la lista de Hécate de qué identidades pueden llamar a cada app y su consulta desde cada app las construye la 009. Hoy Hermes autentica a quien llama y no comprueba el acceso. |
 | Permisos por rol | Hoy hay un único rol privilegiado, el admin (Hécate, identidades, invitaciones); owner y maintainer salen de las definiciones. Falta la capa de permisos para el resto. |
 | `signal` en otros destinos | Solo `hades.signal` tiene uso; en los demás, cuando su contrato publique señales. |
 | Adapter de hardware de Hécate | TPM o YubiKey detrás del `CryptoProvider`: desbloqueo automático y claves que no salen del dispositivo. |
@@ -203,7 +215,7 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 | Anclaje externo de los checkpoints | Una copia de los checkpoints firmados fuera de Cerbero, para detectar también una reescritura de Hécate. |
 | Firma de checkpoints de Hécate | Diseñado, no implementado: Hécate firma con su clave de firma de eventos los últimos hashes de la cadena de cada componente (`POST /v1/checkpoints:sign`), y un cronjob de Hades lanza la verificación periódica; lo necesitan todos los componentes con auditoría ([auditoría](docs/hecate/auditoria.md#la-firma-de-checkpoints)). |
 | `wrap` / `unwrap` de Hécate | Diseñado, no implementado: envolver y desenvolver la DEK de otro componente con la clave de su ámbito; lo necesita Hermes para cifrar sus copias de seguridad ([secretos](docs/hecate/secretos.md#wrap--unwrap)). |
-| Identidades hijas | Diseñado, no implementado: una identidad propia, bajo la de Hades, para cada una de sus integraciones, que Hades pide con su certificado; lo necesita Hades ([identidades](docs/hecate/identidades.md#las-identidades-hijas)). |
+| Identidades hijas | Diseñado, no implementado: una identidad propia, bajo la de Hades, para cada una de sus integraciones, que Hades pide con su certificado; en la lista de acceso de una app no figuran y cuentan como su app, y falta decidir lo que alcanza cada una dentro de la app de destino (su perfilado); lo necesita Hades ([identidades](docs/hecate/identidades.md#las-identidades-hijas), [acceso por app](docs/hecate/acceso.md#el-acceso-por-app)). |
 | Permisos que salen de las declaraciones | Diseñado, no implementado: las referencias `secret://` de una instancia de Hermes o de una integración de Hades dan permiso de lectura a su identidad al registrarla; lo necesitan Hermes y Hades ([acceso](docs/hecate/acceso.md#los-permisos-que-salen-de-las-declaraciones)). |
 | Rotación de la raíz y de las claves de ámbito | Diseñado, no implementado: rotar la raíz a petición del admin, y cada clave de ámbito periódicamente y a mano, volviendo a envolver lo que cifran sin tocar los secretos; lo necesita la respuesta a una clave de ámbito comprometida ([secretos](docs/hecate/secretos.md#rotar-una-clave-de-ámbito), [operación](docs/hecate/operacion.md#clave-de-ámbito-comprometida)). |
 | Gestión y desbloqueo de Hécate desde Ténaro | Diseñado, no implementado: que el admin gestione Hécate (secretos, Access Policy, identidades, rotaciones) y la desbloquee desde Ténaro, con su passkey y por mTLS, y que Ténaro muestre su estado; lo necesita Ténaro ([sellado](docs/hecate/sellado.md#desbloquear)). |

@@ -5,6 +5,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use hecate_domain::app_access::access::AppAccess;
 use hecate_domain::ca::authority::CertificateAuthority;
 use hecate_domain::events::{
     CertificateEvent, CertificateOrigin, EventRecord, IdentityEvent, InvalidEvents,
@@ -25,6 +26,7 @@ use time::{Duration, OffsetDateTime};
 use zeroize::Zeroizing;
 
 use crate::access_policy::service::AccessPolicyService;
+use crate::app_access::service::AppAccessService;
 use crate::ca::service::{CaService, HECATE};
 use crate::errors::ServiceError;
 use crate::identity::jti::SeenTokens;
@@ -353,6 +355,7 @@ pub struct IdentityService {
     sealing: Arc<SealingService>,
     ca: Arc<CaService>,
     policies: Arc<AccessPolicyService>,
+    access: Arc<AppAccessService>,
     secrets: Arc<SecretsService>,
     store: Arc<dyn IdentityStore>,
     attempts: Arc<dyn EnrollAttemptsRepository>,
@@ -373,6 +376,7 @@ impl IdentityService {
         sealing: Arc<SealingService>,
         ca: Arc<CaService>,
         policies: Arc<AccessPolicyService>,
+        access: Arc<AppAccessService>,
         secrets: Arc<SecretsService>,
         store: Arc<dyn IdentityStore>,
         attempts: Arc<dyn EnrollAttemptsRepository>,
@@ -388,6 +392,7 @@ impl IdentityService {
             sealing,
             ca,
             policies,
+            access,
             secrets,
             store,
             attempts,
@@ -1316,6 +1321,32 @@ impl IdentityService {
                 trace.identity.as_deref(),
                 trace.certificate.as_deref(),
                 "get",
+            )?;
+        }
+        outcome
+    }
+
+    /// The list of access of the app that asks (US2, FR-006): authenticated by the certificate of
+    /// its connection and a short call token, it receives its own list and no other, since the
+    /// request has no parameters. Sealed, Hécate answers `unavailable`, with its row. Served, it
+    /// leaves no row, so that the refresh of the apps does not fill the access log; refused, it
+    /// does, as the queries of feature 003.
+    pub fn callers(&self, credentials: &Credentials) -> Result<AppAccess, ServiceError> {
+        self.unsealed_for(Operation::CallersList, Method::Identity)?;
+        let now = self.now();
+        let mut trace = Trace::default();
+        let outcome = self
+            .authenticate(credentials, now, &mut trace)
+            .and_then(|caller| self.access.access_of(&caller.identity));
+        if let Err(error) = &outcome {
+            self.log(
+                Operation::CallersList,
+                Method::Identity,
+                trace.subject.as_deref(),
+                result_for(error),
+                trace.identity.as_deref(),
+                trace.certificate.as_deref(),
+                "list",
             )?;
         }
         outcome

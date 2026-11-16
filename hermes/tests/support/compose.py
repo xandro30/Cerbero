@@ -128,3 +128,11 @@ class ComposeHecate:
 
     def secret(self, reference: str, value: str) -> None:
         self.cli("secrets", "create", reference, "--type", "string", lines=(value,))
+
+    def grant_access(self, identity: str, app: str = "hermes") -> None:
+        """`hecate access grant`: `identity` may call `app` from now on."""
+        self.cli("access", "grant", identity, app)
+
+    def revoke_access(self, identity: str, app: str = "hermes") -> None:
+        """`hecate access revoke`: `identity` no longer calls `app`."""
+        self.cli("access", "revoke", identity, app)

@@ -59,7 +59,7 @@ fn failed(code: &str) -> Value {
 
 #[test]
 fn both_contracts_are_openapi_3_1_in_json() {
-    for (name, version) in [("common.v1.json", "1.1.0"), ("hecate.v1.json", "1.0.0")] {
+    for (name, version) in [("common.v1.json", "1.1.0"), ("hecate.v1.json", "1.1.0")] {
         let document = document(name);
         assert_eq!(document["openapi"], "3.1.0", "{name}");
         assert_eq!(document["info"]["version"], version, "{name}");
@@ -346,6 +346,67 @@ fn the_capabilities_may_list_the_resolution_and_the_status() {
         "api": "v1",
         "operations": ["identities:enroll", "certificates:renew", "revocations", "keys",
                        "keys/{kid}", "secrets:resolve", "status", "capabilities"],
+    }));
+    contract.assert_valid("getCapabilities", 200, &capabilities);
+}
+
+// --- Feature 009: the list of an app (T002) -----------------------------------------------------
+
+fn callers_list(callers: &[&str], version: u64) -> Value {
+    completed(json!({"app": "hermes", "callers": callers, "version": version}))
+}
+
+#[test]
+fn a_callers_list_follows_its_contract() {
+    let contract = Contract::load();
+    contract.assert_valid("listCallers", 200, &callers_list(&["caller", "hades"], 3));
+    contract.assert_valid("listCallers", 200, &callers_list(&[], 0));
+    let mut extra = callers_list(&["hades"], 1);
+    extra["data"]["permissions"] = json!(["send_message"]);
+    assert!(contract.check("listCallers", 200, &extra).is_err());
+    for field in ["app", "callers", "version"] {
+        let mut missing = callers_list(&["hades"], 1);
+        missing["data"].as_object_mut().unwrap().remove(field);
+        assert!(
+            contract.check("listCallers", 200, &missing).is_err(),
+            "{field}"
+        );
+    }
+    for (bad, value) in [
+        ("an identity that is not a name", json!(["Hades!"])),
+        ("a child identity", json!(["hades/integration/x"])),
+        ("a repeated identity", json!(["hades", "hades"])),
+    ] {
+        let mut wrong = callers_list(&[], 1);
+        wrong["data"]["callers"] = value;
+        assert!(contract.check("listCallers", 200, &wrong).is_err(), "{bad}");
+    }
+    let mut negative = callers_list(&["hades"], 1);
+    negative["data"]["version"] = json!(-1);
+    assert!(contract.check("listCallers", 200, &negative).is_err());
+    for (status, code) in [
+        (400, "validation"),
+        (401, "auth"),
+        (500, "internal"),
+        (503, "unavailable"),
+    ] {
+        contract.assert_valid("listCallers", status, &failed(code));
+    }
+    assert!(
+        contract
+            .check("listCallers", 404, &failed("not_found"))
+            .is_err()
+    );
+}
+
+#[test]
+fn the_capabilities_may_list_the_callers() {
+    let contract = Contract::load();
+    let capabilities = completed(json!({
+        "component": "hecate",
+        "api": "v1",
+        "operations": ["identities:enroll", "certificates:renew", "revocations", "keys",
+                       "keys/{kid}", "secrets:resolve", "status", "callers", "capabilities"],
     }));
     contract.assert_valid("getCapabilities", 200, &capabilities);
 }

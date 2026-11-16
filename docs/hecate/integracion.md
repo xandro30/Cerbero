@@ -1,9 +1,9 @@
 # Integrar un componente con Hécate
 
 Lo que tiene que hacer un componente de Cerbero para usar Hécate: qué genera y guarda, cómo se da de alta con su token,
-cómo autentica cada llamada, cuándo renueva su certificado, qué refresca, cómo resuelve sus secretos y los guarda en
-caché, cómo consulta el estado y qué hace ante cada error o con Hécate sellada. Es para quien desarrolla otro
-componente. No lleva código: los esquemas exactos están en el
+cómo autentica cada llamada, cuándo renueva su certificado, qué refresca, cómo aplica una app su lista de acceso, cómo
+resuelve sus secretos y los guarda en caché, cómo consulta el estado y qué hace ante cada error o con Hécate sellada.
+Es para quien desarrolla otro componente. No lleva código: los esquemas exactos están en el
 [contrato de la API](../../shared/contracts/src/cerbero_contracts/openapi/hecate.v1.json), y el componente de prueba de
 Hécate es un cliente de referencia completo.
 
@@ -16,6 +16,7 @@ Hécate es un cliente de referencia completo.
 | Su **certificado** y su **cadena** (la intermedia y la CA raíz) | Presentarse en mTLS, con la intermedia, y reconocer a Hécate y a los demás componentes por la CA raíz |
 | La **huella de la CA raíz** que trae el token de alta | Comprobar a Hécate antes de enviarle nada |
 | La última **lista de revocación** y las **claves publicadas** | Comprobar a quien le llama |
+| Si es una app, la copia de su **lista de acceso** | Decidir a quién atiende sin preguntar a Hécate en cada llamada |
 
 - Además necesita la dirección de la API de Hécate, la que configura el admin (`127.0.0.1:8443` por defecto, ver
   [CLI y configuración](cli.md)).
@@ -41,7 +42,7 @@ sequenceDiagram
     loop mientras viva su certificado
         C->>K: POST /v1/secrets:resolve (certificado + token corto)
         K-->>C: valores con sus tiempos de caché
-        C->>K: GET /v1/revocations y GET /v1/keys, antes de que caduquen
+        C->>K: GET /v1/revocations, GET /v1/keys y, una app, GET /v1/callers, antes de que caduquen
     end
     C->>K: POST /v1/certificates:renew a los dos tercios (claves nuevas)
     K-->>C: certificado nuevo; vuelta al bucle
@@ -150,14 +151,32 @@ sequenceDiagram
 | **Lista de revocación** | `GET /v1/revocations` | Una CRL X.509 por cada intermedia no retirada de la CA actual, firmada por ella, con los certificados revocados con urgencia que aún no han caducado, también los de Hécate | Antes de su `expires_at`, 300 s después de generarse |
 | **Claves de firma de llamadas** | `GET /v1/keys` | La lista de permitidas: las claves que valen para llamadas nuevas, como JWK de RFC 8037 con `kid`, la identidad (`cerbero_identity`), su estado (`cerbero_status`) y la caducidad de su certificado (`cerbero_not_after`) | Antes de su `expires_at`, 300 s |
 | **Una clave concreta** | `GET /v1/keys/{kid}` | Cualquier clave registrada, también una que ya solo verifica firmas pasadas (`verify_only`), o `not_found` | A demanda |
+| **Lista de acceso de una app** | `GET /v1/callers` | Las identidades que pueden llamar a la app que pregunta, y solo a ella ([la lista de acceso](#la-lista-de-acceso-de-una-app)) | Con las demás, y cuando llega alguien que no está en la copia |
 
-- Las tres exigen una llamada autenticada, así que la lista no revela qué componentes existen fuera de Cerbero.
+- Las cuatro exigen una llamada autenticada, así que la lista no revela qué componentes existen fuera de Cerbero.
 - Si Hécate no responde, el componente sigue con su última copia.
 - **Al recibir una llamada de otro componente**, el componente comprueba la cadena hasta la CA raíz y la lista de
-  revocación; que el SPIFFE ID del certificado es el `iss` del token; y que la clave del token está entre las
-  permitidas.
+  revocación; que el SPIFFE ID del certificado es el `iss` del token; que la clave del token está entre las
+  permitidas; y, si es una app, que la identidad de quien llama está en su lista de acceso.
 - La lista de revocación incluye también los certificados revocados de Hécate: tras una revocación urgente, Hécate se
   presenta al momento con un certificado nuevo, y el anterior ya no se debe aceptar.
+
+## La lista de acceso de una app
+
+Una app, como Hermes, atiende solo a las identidades de su lista de acceso, que guarda Hécate
+([acceso por app](acceso.md#el-acceso-por-app)). `GET /v1/callers` le da `app`, su propia identidad, `callers`, las
+identidades que pueden llamarla, ordenadas por nombre, y `version`, la de su lista: 0 si nunca se le ha cambiado nada.
+Una lista vacía no es un error: no la puede llamar nadie.
+
+- **Una copia:** la app la pide con las demás publicaciones (Hermes, cada 240 s), la guarda para arrancar con ella y la
+  sustituye entera con cada respuesta. Sin ninguna copia, ni guardada ni obtenida de Hécate, la app no está lista.
+- **Al recibir una llamada:** después del certificado y del token corto, comprueba que la identidad de quien llama está
+  en su copia. Si no está, vuelve a pedir la lista antes de responder, con una sola petición para las llamadas que
+  lleguen a la vez: así, una concesión vale en la llamada siguiente. Si sigue sin estar, responde `auth`, con el mismo
+  mensaje que ante cualquier otro fallo, y solo su log dice el motivo; si Hécate no responde, `unavailable`.
+- **Una retirada** vale cuando la app refresca su copia: en Hermes, como mucho a los 240 s.
+- **Con Hécate sellada o caída**, la app sigue con su última copia: nadie gana el acceso ni lo pierde por ello.
+- Lo que diga el token corto sobre permisos o accesos no cuenta.
 
 ## Resolver secretos
 
@@ -241,7 +260,7 @@ defecto), y reintenta.
 
 ## Operaciones
 
-Las ocho de la versión 1, que `GET /v1/capabilities` lista; los esquemas de cada una están en el
+Las nueve de la versión 1, que `GET /v1/capabilities` lista; los esquemas de cada una están en el
 [contrato de la API](../../shared/contracts/src/cerbero_contracts/openapi/hecate.v1.json).
 
 | Operación | Propósito | Autenticación | `Idempotency-Key` | Sellada |
@@ -251,6 +270,7 @@ Las ocho de la versión 1, que `GET /v1/capabilities` lista; los esquemas de cad
 | `GET /v1/revocations` | La lista de revocación | Certificado + token corto | — | `unavailable` |
 | `GET /v1/keys` | Las claves de firma de llamadas que valen para llamadas nuevas | Certificado + token corto | — | `unavailable` |
 | `GET /v1/keys/{kid}` | Una clave concreta, también antigua | Certificado + token corto | — | `unavailable` |
+| `GET /v1/callers` | La lista de acceso de la app que pregunta | Certificado + token corto | — | `unavailable` |
 | `POST /v1/secrets:resolve` | Resolver hasta 100 secretos, todo o nada | Certificado + token corto | — | `unavailable` |
 | `GET /v1/status` | El estado agregado | Certificado + token corto, con el permiso de estado | — | Responde |
 | `GET /v1/capabilities` | El componente (`hecate`), la versión (`v1`) y sus operaciones | Certificado + token corto | — | `unavailable` |
@@ -265,15 +285,16 @@ Las ocho de la versión 1, que `GET /v1/capabilities` lista; los esquemas de cad
   ([`testing.rs`](../../hecate/crates/infrastructure/src/testing.rs)) habla con la API como lo haría un componente real,
   y lo usan las suites de Hécate. Hace todo lo de esta guía: genera sus claves, comprueba a Hécate con la huella, se da
   de alta, firma cada llamada, renueva repitiendo la misma petición si no recibe respuesta, consulta las claves
-  publicadas y guarda la lista de revocación, con la que comprueba el certificado de quien le llama.
+  publicadas y su lista de acceso, y guarda la lista de revocación, con la que comprueba el certificado de quien le
+  llama.
 - **El ejemplo `component`** ([`component.rs`](../../hecate/crates/infrastructure/examples/component.rs)) lo usa
   desde la línea de órdenes, con sus claves en el directorio que se le dé (`--state`): `enroll`, `renew`, `keys`,
-  `key`, `revocations`, `resolve` y `status`. Cómo se compila y se ejecuta está en el
+  `key`, `revocations`, `callers`, `resolve` y `status`. Cómo se compila y se ejecuta está en el
   [README de desarrollo](../../hecate/README.md).
 
 ## Relacionado
 
 - [Hécate](../hecate.md): el documento de alto nivel.
 - [Identidades](identidades.md): el diseño del alta, la renovación y la revocación.
-- [Acceso](acceso.md): el diseño de la resolución y del permiso de estado.
+- [Acceso](acceso.md): el diseño de la resolución, del permiso de estado y del acceso por app.
 - [Contrato de la API](../../shared/contracts/src/cerbero_contracts/openapi/hecate.v1.json): el OpenAPI de Hécate.

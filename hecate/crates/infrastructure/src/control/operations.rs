@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use hecate_application::access_policy::service::{AccessPolicyService, PolicyChange};
+use hecate_application::app_access::service::{AccessChange, AppAccessService};
 use hecate_application::ca::service::{CaService, CaSummary};
 use hecate_application::identity::service::{IdentityCounts, IdentityService};
 use hecate_application::sealing::service::{SealingService, Status, Unsealed};
@@ -12,7 +13,8 @@ use hecate_application::secrets::service::{
     Added, CreateOptions, Created, SecretDetails, SecretSummary, SecretsService,
 };
 use hecate_domain::access_policy::policy::AccessPolicy;
-use hecate_domain::events::PolicyEvent;
+use hecate_domain::app_access::access::AppAccess;
+use hecate_domain::events::{AccessEvent, PolicyEvent};
 use hecate_domain::identity::names::Serial;
 use hecate_domain::instant::isoformat;
 use hecate_domain::sealing::access_log::{Method, Operation};
@@ -83,12 +85,13 @@ fn unsealed_data(unsealed: &Unsealed) -> Value {
     })
 }
 
-/// The operations of the CA, of the identities and of their Access Policy, and what the channel
-/// tells when what the API presents may change.
+/// The operations of the CA, of the identities, of their Access Policy and of the lists of access
+/// of the apps, and what the channel tells when what the API presents may change.
 pub struct IdentityOperations {
     pub ca: Arc<CaService>,
     pub identities: Arc<IdentityService>,
     pub policies: Arc<AccessPolicyService>,
+    pub access: Arc<AppAccessService>,
     /// Runs after the CA is created or replaced, after an unseal, after Hécate's certificate is
     /// replaced and after the intermediate is renewed: the supervisor of the API renews Hécate's
     /// certificate if it is due and starts, replaces or stops the listener.
@@ -115,6 +118,18 @@ fn identity_audited(op: &str) -> Option<(Operation, &'static str)> {
         "identities.disable" => (Operation::IdentityDisable, "disable"),
         "identities.enable" => (Operation::IdentityEnable, "enable"),
         "certificates.revoke" => (Operation::CertificateRevoke, "revoke"),
+        _ => return None,
+    })
+}
+
+/// The operation of the row that a refused request on the lists of access leaves; its detail is
+/// empty (data-model.md).
+fn access_audited(op: &str) -> Option<Operation> {
+    Some(match op {
+        "access.grant" => Operation::AccessGrant,
+        "access.revoke" => Operation::AccessRevoke,
+        "access.list" => Operation::AccessList,
+        "access.get" => Operation::AccessGet,
         _ => return None,
     })
 }
@@ -286,8 +301,8 @@ fn register_identities(handler: &mut RequestHandler, ops: &IdentityOperations) {
     );
 }
 
-/// The arguments of an operation of the Access Policy are exactly its own: one missing or one
-/// more is `validation` (contracts/control-protocol.md).
+/// The arguments of an operation of the Access Policy or of the lists of access are exactly its
+/// own: one missing or one more is `validation` (contracts/control-protocol.md).
 fn exact_args(args: &Map<String, Value>, names: &[&str]) -> Result<(), OpError> {
     if args.keys().all(|key| names.contains(&key.as_str())) {
         return Ok(());
@@ -408,6 +423,94 @@ fn register_policies(handler: &mut RequestHandler, policies: &Arc<AccessPolicySe
         Box::new(move |args| {
             exact_args(args, &["identity"])?;
             Ok(policy_detail(&service.get(&text_arg(args, "identity")?)?))
+        }),
+    );
+}
+
+fn access_change_data(change: &AccessChange) -> Value {
+    json!({
+        "identity": change.caller.as_str(),
+        "app": change.app.as_str(),
+        "version": change.version,
+        "changed": change.changed,
+    })
+}
+
+fn access_change_name(event: &AccessEvent) -> &'static str {
+    match event {
+        AccessEvent::CallerGranted { .. } => "caller_granted",
+        AccessEvent::CallerRevoked { .. } => "caller_revoked",
+    }
+}
+
+/// A list as `access.list` shows it: how many identities call the app.
+fn access_summary(access: &AppAccess) -> Value {
+    json!({
+        "app": access.app.as_str(),
+        "callers": access.callers().count(),
+        "version": access.version,
+    })
+}
+
+/// A list with its history, as `access.get` shows it: the identities that call the app, by name,
+/// and each version with its change, the identity, when and who made it.
+fn access_detail(access: &AppAccess) -> Value {
+    let history: Vec<Value> = access
+        .history
+        .iter()
+        .zip(1u64..)
+        .map(|(event, version)| {
+            json!({
+                "version": version,
+                "change": access_change_name(event),
+                "caller": event.caller().as_str(),
+                "at": isoformat(event.at()),
+                "by": event.by().as_str(),
+            })
+        })
+        .collect();
+    json!({
+        "app": access.app.as_str(),
+        "callers": access.callers().collect::<Vec<_>>(),
+        "version": access.version,
+        "history": history,
+    })
+}
+
+fn register_access(handler: &mut RequestHandler, access: &Arc<AppAccessService>) {
+    let service = access.clone();
+    handler.register(
+        "access.grant",
+        Box::new(move |args| {
+            exact_args(args, &["identity", "app"])?;
+            let change = service.grant(&text_arg(args, "identity")?, &text_arg(args, "app")?)?;
+            Ok(access_change_data(&change))
+        }),
+    );
+    let service = access.clone();
+    handler.register(
+        "access.revoke",
+        Box::new(move |args| {
+            exact_args(args, &["identity", "app"])?;
+            let change = service.revoke(&text_arg(args, "identity")?, &text_arg(args, "app")?)?;
+            Ok(access_change_data(&change))
+        }),
+    );
+    let service = access.clone();
+    handler.register(
+        "access.list",
+        Box::new(move |args| {
+            exact_args(args, &[])?;
+            let apps: Vec<Value> = service.list()?.iter().map(access_summary).collect();
+            Ok(json!({"apps": apps}))
+        }),
+    );
+    let service = access.clone();
+    handler.register(
+        "access.get",
+        Box::new(move |args| {
+            exact_args(args, &["app"])?;
+            Ok(access_detail(&service.get(&text_arg(args, "app")?)?))
         }),
     );
 }
@@ -717,6 +820,14 @@ fn record_refused(
     op: &str,
     args: &Map<String, Value>,
 ) {
+    if let Some(operation) = access_audited(op) {
+        if let Some(ops) = identities
+            && let Err(error) = ops.access.record_invalid_request(operation)
+        {
+            tracing::error!(target: "hecate.control", op, exception = error.kind(), "unexpected error");
+        }
+        return;
+    }
     if let Some((operation, detail)) = policy_audited(op) {
         if let Some(ops) = identities
             && let Err(error) = ops.policies.record_invalid_request(operation, detail)
@@ -921,6 +1032,7 @@ fn build(
         register_tokens(&mut handler, &ops.identities);
         register_identities(&mut handler, ops);
         register_policies(&mut handler, &ops.policies);
+        register_access(&mut handler, &ops.access);
     }
     handler.on_refused(Box::new(move |op, args| {
         record_refused(&sealing, secrets.as_deref(), ca.as_ref(), op, args)

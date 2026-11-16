@@ -139,6 +139,7 @@ pub fn ca_handler(rig: &CaRig) -> (RequestHandler, Arc<AtomicUsize>) {
             ca: rig.service.clone(),
             identities: rig.identities.clone(),
             policies: rig.policies.clone(),
+            access: rig.access.clone(),
             changed: Arc::new(move || {
                 counter.fetch_add(1, Ordering::SeqCst);
             }),
@@ -240,6 +241,7 @@ pub fn api_handler(rig: &CaRig, supervisor: &Arc<ApiSupervisor>) -> Arc<RequestH
             ca: rig.service.clone(),
             identities: rig.identities.clone(),
             policies: rig.policies.clone(),
+            access: rig.access.clone(),
             changed: Arc::new(move || {
                 runtime.block_on(supervisor.tick()).unwrap();
             }),

@@ -1,10 +1,12 @@
 """The flow of Hermes from end to end (T105, quickstart.md sections 2 to 8), in containers: PostgreSQL, a Hécate of
 tests, Hermes with the fake provider and Envoy, from the compose of hermes/deploy with its file for the tests.
 
-It prepares Hécate, enrolls Hermes, applies the configuration, verifies the channel with a message left in the inbox of
-the fake, sends with the reference client through Envoy, tries the invalid credentials of story 2 that the stack can
-produce (SC-002; an expired certificate is in the tests of the API, because Hécate only issues valid ones) and, with
-PostgreSQL stopped, checks that Hermes is not ready and that the sends are unavailable.
+It prepares Hécate, grants two components the access to Hermes, enrolls Hermes, applies the configuration, verifies the
+channel with a message left in the inbox of the fake, sends with the reference client through Envoy, tries the invalid
+credentials of story 2 that the stack can produce (SC-002; an expired certificate is in the tests of the API, because
+Hécate only issues valid ones), checks that a third component without access answers `auth` until the admin grants it
+(change 009), that a revoked certificate and a revoked access answer `auth` after the next refresh and, with PostgreSQL
+stopped, that Hermes is not ready and that the sends are unavailable. The access of `caller` is never revoked.
 """
 
 from __future__ import annotations
@@ -44,8 +46,10 @@ FAKE = "/home/hermes/fake/test_fake"
 @dataclass
 class Stack:
     compose: Compose
+    hecate: ComposeHecate
     state: Path
     second: Path
+    third: Path
     workdir: Path
     before_enrollment: str
     enrolled: str
@@ -89,6 +93,8 @@ def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Stack]:
         hecate.secret("secret://hermes/postgres/password", password)
         hermes_token = hecate.token("hermes")
         caller_token = hecate.token("caller")
+        hecate.grant_access("caller")
+        hecate.grant_access("caller-two")
         compose.run("up", "-d", "--build", "hermes", "envoy")
         _, before = health(compose)
         enrolled = compose.exec("hermes", "hermes", "enroll", stdin=f"{hermes_token}\n")
@@ -111,7 +117,9 @@ def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Stack]:
         asyncio.run(enroll(HECATE_URL, state, caller_token))
         second = tmp_path_factory.mktemp("caller-two")
         asyncio.run(enroll(HECATE_URL, second, hecate.token("caller-two")))
-        yield Stack(compose, state, second, tmp_path_factory.mktemp("e2e"), before, enrolled, applied)
+        third = tmp_path_factory.mktemp("caller-three")
+        asyncio.run(enroll(HECATE_URL, third, hecate.token("caller-three")))
+        yield Stack(compose, hecate, state, second, third, tmp_path_factory.mktemp("e2e"), before, enrolled, applied)
     except BaseException:
         print(compose.logs("hermes", "envoy", "hecate")[-12000:])
         raise
@@ -219,23 +227,44 @@ async def capabilities_status(state: Path) -> int:
     return response.status_code
 
 
-async def test_an_urgently_revoked_certificate_answers_auth_once_hermes_refreshes_its_list(stack: Stack) -> None:
+async def test_a_component_without_access_answers_auth_and_sends_once_it_is_granted(stack: Stack) -> None:
+    """The third component is not in the access list of Hermes; a grant counts in its next call."""
+    before = len(outbox(stack.compose))
+    refused = await send(stack, f"e2e-without-access-{uuid.uuid4().hex}", state=stack.third)
+    assert refused.status_code == 401
+    assert checked(refused)["error"]["message"] == AUTH_MESSAGE
+    assert refusals(stack.compose)[-1] == "not_allowed"
+    assert len(outbox(stack.compose)) == before
+    stack.hecate.grant_access("caller-three")
+    granted = await send(stack, f"e2e-granted-{uuid.uuid4().hex}", state=stack.third)
+    assert granted.status_code == 200, refusals(stack.compose)
+    assert len(outbox(stack.compose)) == before + 1
+
+
+async def test_a_revoked_certificate_and_a_revoked_access_answer_auth_once_hermes_refreshes_its_lists(
+    stack: Stack,
+) -> None:
     """The second component calls first, so its key is in the cache of Hermes and the revocation list is what refuses
-    it, once Hermes refreshes it (every 240 s)."""
-    assert (await send(stack, f"e2e-before-revoking-{uuid.uuid4().hex}", state=stack.second)).status_code == 200
+    it; the third one is in the copy of the access list, so the list that the same refresh brings is what refuses it
+    (every 240 s)."""
+    stack.hecate.grant_access("caller-three")
+    for state in (stack.second, stack.third):
+        assert (await send(stack, f"e2e-before-revoking-{uuid.uuid4().hex}", state=state)).status_code == 200
     stored = identity_store(stack.second).load()
     assert stored is not None
     revoked = stack.compose.exec("hecate", "hecate", "certificates", "revoke", stored.certificate.serial, "--urgent")
     assert revoked.startswith(f"revoked {stored.certificate.serial}")
+    stack.hecate.revoke_access("caller-three")
     deadline = time.monotonic() + 300
-    while await capabilities_status(stack.second) == 200:
-        assert time.monotonic() < deadline, "hermes did not refresh its revocation list in 300 s"
+    while await capabilities_status(stack.second) == 200 or await capabilities_status(stack.third) == 200:
+        assert time.monotonic() < deadline, "hermes did not refresh its lists in 300 s"
         await asyncio.sleep(5)
-    assert refusals(stack.compose)[-1] == "revoked"
+    assert set(refusals(stack.compose)[-2:]) == {"revoked", "not_allowed"}
     before = len(outbox(stack.compose))
-    response = await send(stack, f"e2e-revoked-{uuid.uuid4().hex}", state=stack.second)
-    assert response.status_code == 401
-    assert checked(response)["error"]["message"] == AUTH_MESSAGE
+    for state in (stack.second, stack.third):
+        response = await send(stack, f"e2e-revoked-{uuid.uuid4().hex}", state=state)
+        assert response.status_code == 401
+        assert checked(response)["error"]["message"] == AUTH_MESSAGE
     assert len(outbox(stack.compose)) == before
 
 

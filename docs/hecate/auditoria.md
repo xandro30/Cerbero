@@ -6,8 +6,9 @@ componente. Es para quien quiere entender o revisar el diseño, o consultar el r
 
 ## Dos historias
 
-- **Los eventos** de los aggregates (secretos, claves, identidades, certificados y políticas) son la historia de cada
-  cambio: qué cambió, cuándo y, en las políticas, quién. Ningún evento lleva un valor
+- **Los eventos** de los aggregates (secretos, claves, identidades, certificados, políticas y listas de acceso) son la
+  historia de cada cambio: qué cambió, cuándo y, en las políticas y las listas de acceso, quién. Ningún evento lleva un
+  valor
   ([dónde se guardan](secretos.md#dónde-se-guarda)).
 - **El registro de accesos** recoge cada uso y cada intento: resoluciones, altas, renovaciones, órdenes del admin,
   intentos de desbloqueo y rechazos. Va aparte, append-only, para que los aggregates no crezcan con cada lectura.
@@ -23,7 +24,7 @@ tiene:
 | `operation` | La operación, p. ej. `unseal`, `secret_resolve`, `identity_enroll` o `policy_grant` |
 | `method` | Cómo se pidió: `passphrase`, `recovery`, `local` (el admin por el canal local), `identity` (un componente autenticado), `enrollment_token` o `internal` (la propia Hécate) |
 | `result` | `success`, `failure`, `rejected_rate_limited`, `rejected_conflict`, `invalid_input` o `not_found` |
-| `detail` | El paso o la variante, p. ej. `begin` o `confirm` de una ceremonia |
+| `detail` | El paso o la variante, p. ej. `begin` o `confirm` de una ceremonia, o la identidad que llama en las órdenes de las listas de acceso (`caller <identidad>`) |
 | `subject` | Quién: `admin`, el SPIFFE ID de un componente o `hecate` |
 | `path` y `version` | El secreto y la versión que toca, si toca uno |
 | `identity` y `certificate` | La identidad y la serie del certificado que toca, si toca uno |
@@ -38,12 +39,14 @@ tiene:
 | Las órdenes del admin sobre secretos | Una por orden, con `subject: admin`, la ruta y la versión |
 | Las ceremonias de la CA y las órdenes sobre tokens, identidades y certificados | Una por paso u orden, con `subject: admin`, la identidad y, si la hay, la serie |
 | Las órdenes de la Access Policy | Una por orden, con `subject: admin` y la identidad de la política, también si no cambia nada |
+| Las órdenes de las listas de acceso (`access_grant`, `access_revoke`, `access_list` y `access_get`) | Una por orden, con `subject: admin` y la app en `identity`; en las que cambian una lista, la identidad que llama en `detail`. También si no cambian nada |
 | Una resolución | Una por referencia si se atiende, o una con la primera que falla si se rechaza, con el SPIFFE ID, la identidad y la serie |
 | Un alta o una renovación | Una por intento; las altas rechazadas por el freno, una sola por tanda (`identity_enroll_throttled`) |
 | Lo que hace Hécate sola | Una por acción, con `method: internal`: renovar o reemitir su certificado y revocar las identidades de un segundo intento de renovación |
 | Una operación de la API rechazada, también con Hécate sellada | Una por rechazo, sin quién si no se llegó a autenticar |
+| La consulta de su lista de acceso por una app (`callers_list`) | Solo si se rechaza, con el SPIFFE ID, la identidad y la serie si se conocen; la atendida no deja fila |
 | Una petición a una ruta o un método que no es una operación de la API | Ninguna |
-| Las consultas atendidas de la API: lista de revocación, claves publicadas, `capabilities` y estado | Ninguna |
+| Las consultas atendidas de la API: lista de revocación, claves publicadas, lista de acceso de una app, `capabilities` y estado | Ninguna |
 | El `status` del admin y los recuentos de caducidad | Ninguna |
 
 Un fallo interno, como un disco lleno, no deja fila: la fila es de lo que Hécate atiende o rechaza.
@@ -84,4 +87,4 @@ Hécate firma también sus propios checkpoints, y eso solo lo cubre un anclaje e
 
 - [Hécate](../hecate.md): el documento de alto nivel.
 - [Seguridad](seguridad.md): por qué ningún valor ni huella llega al registro.
-- [Acceso](acceso.md): las filas de las resoluciones y del estado.
+- [Acceso](acceso.md): las filas de las resoluciones, del estado y de las listas de acceso.

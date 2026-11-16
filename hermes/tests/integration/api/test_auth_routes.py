@@ -1,5 +1,6 @@
 """Authentication on the API (T046, SC-002 on the API): every route answers `auth` to each invalid credential of
-story 2, with the same message and without reaching the provider; no route is served without it."""
+story 2, with the same message and without reaching the provider; no route is served without it. An identity outside
+the access list of Hermes is refused in the same way, and a grant counts in the next call (T027 of 009)."""
 
 import json
 import logging
@@ -33,6 +34,7 @@ from support.doubles import (
     Providers,
     StaticSecrets,
     StaticTrust,
+    access_list,
 )
 from support.pki import TestCa, spiffe
 from support.xfcc import HERMES, xfcc
@@ -58,7 +60,7 @@ class Api:
         self.fake = FakeProvider(read_manifest("fake"), self.clock)
         channels = MemoryChannels()
         channels.verify("contacto_fake", "fake", "test_fake", FAKE_CHAT)
-        self.trust = StaticTrust(self.ca.root, HERMES, [], self.keys)
+        self.trust = StaticTrust(self.ca.root, HERMES, [], self.keys, callers=["hades"])
         state = ConfigurationState(configuration())
         audit = MemoryAudit()
         send = SendMessage(
@@ -219,3 +221,69 @@ async def test_every_route_answers_401_without_credentials(api: Api, client: htt
             response = await client.request(method, path, json=BODY)
             assert response.status_code == 401, f"{method} {path}"
             assert response.json()["error"]["message"] == AUTH_MESSAGE
+
+
+# --- The access list of Hermes ----------------------------------------------------------------------------------
+
+
+def allow_only(api: Api, *callers: str) -> None:
+    """The copy of the access list of Hermes and the list in Hécate, both with `callers` and no one else."""
+    api.trust.access = access_list(callers)
+    api.trust.granted = list(callers)
+
+
+async def test_every_route_answers_auth_to_an_authenticated_identity_outside_the_list(
+    api: Api, client: httpx.AsyncClient
+) -> None:
+    allow_only(api, "caller")
+    calls = 0
+    for template, methods, _ in network_routes():
+        path = re.sub(r"\{[^}]+\}", "test_fake", template)
+        for method in methods:
+            response = await client.request(method, path, json=BODY, headers=api.headers())
+            calls += 1
+            assert response.status_code == 401, f"{method} {path}"
+            assert response.json()["error"] == {"code": "auth", "message": AUTH_MESSAGE, "retryable": False}
+    assert calls >= 3
+    assert api.fake.sent() == []
+    assert api.trust.access_lookups == calls
+
+
+async def test_a_grant_made_in_hecate_enters_in_the_next_call(api: Api, client: httpx.AsyncClient) -> None:
+    allow_only(api)
+    refused = await client.post(PATH, json=BODY, headers=api.headers())
+    assert refused.status_code == 401
+    contract().assert_valid("sendMessage", 401, refused.json())
+    api.trust.granted.append("hades")
+    served = await client.post(PATH, json=BODY, headers=api.headers())
+    assert served.status_code == 200
+    contract().assert_valid("sendMessage", 200, served.json())
+    assert len(api.fake.sent()) == 1
+    assert api.trust.access_lookups == 2
+
+
+async def test_hecate_not_answering_the_lookup_is_unavailable_without_effect(
+    api: Api, client: httpx.AsyncClient
+) -> None:
+    allow_only(api)
+    api.trust.down = True
+    response = await client.post(PATH, json=BODY, headers=api.headers())
+    assert response.status_code == 503
+    body = response.json()
+    contract().assert_valid("sendMessage", 503, body)
+    assert (body["error"]["code"], body["error"]["retryable"]) == ("unavailable", True)
+    assert api.fake.sent() == []
+
+
+async def test_the_refusal_of_an_identity_outside_the_list_says_not_allowed_with_the_request_id_of_its_answer(
+    api: Api, client: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    allow_only(api, "caller")
+    caplog.set_level(logging.INFO, logger="hermes")
+    response = await client.post(PATH, json=BODY, headers=api.headers())
+    assert response.status_code == 401
+    assert "not_allowed" not in response.text
+    formatter = JsonFormatter()
+    lines = [json.loads(formatter.format(record)) for record in caplog.records]
+    [refused] = [line for line in lines if line["event"] == "auth.refused"]
+    assert (refused["request_id"], refused["reason"]) == (response.json()["meta"]["request_id"], "not_allowed")

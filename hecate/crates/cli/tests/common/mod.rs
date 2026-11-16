@@ -160,6 +160,7 @@ pub fn ca_running() -> CaRunning {
             ca: rig.service.clone(),
             identities: rig.identities.clone(),
             policies: rig.policies.clone(),
+            access: rig.access.clone(),
             changed: Arc::new(|| {}),
         },
     );

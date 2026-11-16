@@ -62,6 +62,11 @@ text_enum!(Operation {
     PolicyList => "policy_list",
     PolicyGet => "policy_get",
     StatusGet => "status_get",
+    AccessGrant => "access_grant",
+    AccessRevoke => "access_revoke",
+    AccessList => "access_list",
+    AccessGet => "access_get",
+    CallersList => "callers_list",
 });
 
 text_enum!(Method {
@@ -115,5 +120,20 @@ mod tests {
             assert_eq!(Operation::parse(text), Some(operation));
         }
         assert_eq!(Operation::parse("policy"), None);
+    }
+
+    #[test]
+    fn the_operations_of_the_lists_of_access_have_their_text() {
+        for (operation, text) in [
+            (Operation::AccessGrant, "access_grant"),
+            (Operation::AccessRevoke, "access_revoke"),
+            (Operation::AccessList, "access_list"),
+            (Operation::AccessGet, "access_get"),
+            (Operation::CallersList, "callers_list"),
+        ] {
+            assert_eq!(operation.as_str(), text);
+            assert_eq!(Operation::parse(text), Some(operation));
+        }
+        assert_eq!(Operation::parse("access"), None);
     }
 }

@@ -1,5 +1,6 @@
 """The health of Hermes through the local channel (T101, contracts/admin-channel.md, cli.md, FR-015): whether the
-process answers and whether it is ready, with the reason when it is not; the network API has no route for it."""
+process answers and whether it is ready, with the reason when it is not; the network API has no route for it. Without a
+copy of its access list it is not ready either (T025 of 009)."""
 
 from __future__ import annotations
 
@@ -25,7 +26,12 @@ from support.paths import short_dir
 
 pytestmark = pytest.mark.anyio
 
-REASONS = ["needs a new enrollment token", "database unavailable", "configuration not loaded"]
+REASONS = [
+    "needs a new enrollment token",
+    "access list not loaded",
+    "database unavailable",
+    "configuration not loaded",
+]
 
 
 class Situation:
@@ -33,6 +39,7 @@ class Situation:
 
     def __init__(self) -> None:
         self.identity: str | None = None
+        self.access = True
         self.database = True
         self.configuration = True
 
@@ -42,6 +49,7 @@ class Situation:
 
         return HealthCheck(
             identity_problem=lambda: self.identity,
+            access_loaded=lambda: self.access,
             database_answers=database,
             configuration_loaded=lambda: self.configuration,
         )
@@ -50,9 +58,21 @@ class Situation:
         if reason == REASONS[0]:
             self.identity = reason
         elif reason == REASONS[1]:
+            self.access = False
+        elif reason == REASONS[2]:
             self.database = False
         else:
             self.configuration = False
+
+    def recover(self, reason: str) -> None:
+        if reason == REASONS[0]:
+            self.identity = None
+        elif reason == REASONS[1]:
+            self.access = True
+        elif reason == REASONS[2]:
+            self.database = True
+        else:
+            self.configuration = True
 
 
 class NoIdentity:
@@ -116,15 +136,16 @@ async def test_the_first_reason_in_the_order_of_the_start_is_the_one_it_says(
 ) -> None:
     for reason in REASONS:
         situation.lose(reason)
-    assert (await health(admin_dir))["data"]["reason"] == REASONS[0]
-    situation.identity = None
-    assert (await health(admin_dir))["data"]["reason"] == REASONS[1]
+    for reason in REASONS:
+        assert (await health(admin_dir))["data"]["reason"] == reason
+        situation.recover(reason)
+    assert (await health(admin_dir))["data"] == {"live": True, "ready": True}
 
 
 async def test_live_exits_with_0_while_the_process_answers_ready_or_not(
     admin_dir: Path, situation: Situation, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    situation.lose(REASONS[1])
+    situation.lose(REASONS[2])
     assert await run(admin_dir, ["health", "--live"]) == 0
     assert capsys.readouterr().out == "live\n"
 

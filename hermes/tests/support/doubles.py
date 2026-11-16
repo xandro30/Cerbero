@@ -1,4 +1,5 @@
-"""Doubles of the ports for the tests: the caller, the channels, the audit, the secrets and a chat provider."""
+"""Doubles of the ports for the tests: the caller, the channels, the audit, the secrets, a chat provider and the trust
+of Hermes, with the copy of its access list."""
 
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ from datetime import datetime
 from cryptography import x509
 
 from hermes.application.ports import (
+    AccessList,
     AuditEntry,
     CallCredentials,
     Caller,
@@ -213,8 +215,25 @@ class MemoryUsedTokens:
         return len(old)
 
 
+def access_list(callers: Sequence[str] = (), *, version: int | None = None, at: datetime = START) -> AccessList:
+    """The access list of Hermes as Hécate gives it: the identities by name and, by default, the version that granting
+    them one by one leaves."""
+    return AccessList(
+        app="hermes",
+        callers=tuple(sorted(callers)),
+        version=len(callers) if version is None else version,
+        fetched_at=at,
+    )
+
+
 class StaticTrust:
-    """The trust of Hermes from the test CA: its root, the SPIFFE ID of Hermes, the CRLs and the published keys."""
+    """The trust of Hermes from the test CA: its root, the SPIFFE ID of Hermes, the CRLs, the published keys and the
+    copy of its access list, empty by default and None without a copy.
+
+    `granted` is the list that Hécate has, the copy unless a test says otherwise: a lookup brings it and puts it in the
+    copy, so a test grants in Hécate by adding to it. `access_lookups` counts the lookups, and with `down` Hécate does
+    not answer about keys or lists.
+    """
 
     def __init__(
         self,
@@ -223,6 +242,8 @@ class StaticTrust:
         revocations: Sequence[x509.CertificateRevocationList] = (),
         keys: Sequence[Mapping[str, object]] = (),
         *,
+        callers: Sequence[str] | None = (),
+        granted: Sequence[str] | None = None,
         later: Mapping[str, Mapping[str, object]] | None = None,
         asked: list[str] | None = None,
         down: bool = False,
@@ -231,14 +252,19 @@ class StaticTrust:
         self.hermes = SpiffeId.parse(hermes)
         self.revocations = tuple(revocations)
         self.keys = tuple(keys)
+        self.access = access_list(callers) if callers is not None else None
+        self.granted = list(granted if granted is not None else callers or ())
+        self.access_lookups = 0
         self.later = later if later is not None else {}
         self.asked = asked if asked is not None else []
         self.down = down
 
     def material(self) -> TrustMaterial | None:
-        if self.root is None:
+        if self.root is None or self.access is None:
             return None
-        return TrustMaterial(root=self.root, hermes=self.hermes, revocations=self.revocations, keys=self.keys)
+        return TrustMaterial(
+            root=self.root, hermes=self.hermes, revocations=self.revocations, keys=self.keys, access=self.access
+        )
 
     async def key(self, kid: str) -> Mapping[str, object] | None:
         """A key that Hécate knows and the list does not have yet; it keeps each kid it is asked for."""
@@ -246,6 +272,14 @@ class StaticTrust:
         if self.down:
             raise HermesError(ErrorCode.UNAVAILABLE, "hecate does not answer about the key")
         return self.later.get(kid)
+
+    async def lookup_access(self) -> AccessList:
+        """The list that Hécate has now, which replaces the copy."""
+        self.access_lookups += 1
+        if self.down:
+            raise HermesError(ErrorCode.UNAVAILABLE, "hecate does not answer about the access list")
+        self.access = access_list(self.granted)
+        return self.access
 
 
 class MemoryIdentityStore:
@@ -257,6 +291,7 @@ class MemoryIdentityStore:
         self.pending: PendingRenewal | None = None
         self.revocations: RevocationLists | None = None
         self.keys: PublishedKeys | None = None
+        self.access: AccessList | None = None
 
     def load(self) -> StoredIdentity | None:
         return self.identity
@@ -285,6 +320,12 @@ class MemoryIdentityStore:
 
     def save_keys(self, keys: PublishedKeys) -> None:
         self.keys = keys
+
+    def load_access(self) -> AccessList | None:
+        return self.access
+
+    def save_access(self, access: AccessList) -> None:
+        self.access = access
 
 
 class MemoryConfigStore(MemoryChannels):

@@ -1,4 +1,5 @@
-"""The authentication of each call (T044, FR-003, FR-004, research R3), with the test CA of T006."""
+"""The authentication of each call (T044, FR-003, FR-004, research R3), with the test CA of T006; and the access list
+of Hermes after the token (T024 of 009)."""
 
 import logging
 from datetime import datetime, timedelta
@@ -34,19 +35,28 @@ class World:
         self.later: dict[str, dict[str, Any]] = {}
         self.asked: list[str] = []
         self.down = False
+        self.callers: list[str] | None = ["hades"]
+        self.granted: list[str] | None = None
 
-    @property
-    def authenticator(self) -> CallAuthenticator:
-        trust = StaticTrust(
+    def trust(self) -> StaticTrust:
+        return StaticTrust(
             self.root,
             HERMES,
             [self.ca.crl(self.revoked)],
             self.keys,
+            callers=self.callers,
+            granted=self.granted,
             later=self.later,
             asked=self.asked,
             down=self.down,
         )
+
+    def authenticator_on(self, trust: StaticTrust) -> CallAuthenticator:
         return CallAuthenticator(trust=trust, used_tokens=self.tokens, clock=self.clock)
+
+    @property
+    def authenticator(self) -> CallAuthenticator:
+        return self.authenticator_on(self.trust())
 
     def token(self, key: CallKey | None = None, **overrides: Any) -> str:
         fields: dict[str, Any] = {"issuer": spiffe("hades"), "audience": HERMES, "issued_at": self.clock.now()}
@@ -104,7 +114,7 @@ async def test_a_certificate_whose_serial_is_in_the_crl_is_refused() -> None:
 
 async def test_without_a_crl_of_its_intermediate_the_certificate_is_refused() -> None:
     world = World()
-    trust = StaticTrust(world.ca.root, HERMES, [], world.keys)
+    trust = StaticTrust(world.ca.root, HERMES, [], world.keys, callers=["hades"])
     with pytest.raises(HermesError) as raised:
         await CallAuthenticator(trust=trust, used_tokens=world.tokens, clock=world.clock).authenticate(
             world.credentials()
@@ -405,3 +415,114 @@ async def test_an_audit_context_of_another_shape_is_validation(context: object) 
     with pytest.raises(HermesError) as raised:
         await world.authenticator.authenticate(world.credentials(token=world.token(extra={"cerbero_audit": context})))
     assert raised.value.code is ErrorCode.VALIDATION
+
+
+# --- The access list of Hermes ----------------------------------------------------------------------------------
+
+
+def reasons(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [getattr(record, "fields", {}).get("reason") for record in caplog.records if record.msg == "auth.refused"]
+
+
+async def test_a_caller_in_the_copy_of_the_access_list_enters_without_asking_hecate() -> None:
+    world = World()
+    trust = world.trust()
+    caller = await world.authenticator_on(trust).authenticate(world.credentials())
+    assert caller.spiffe_id == SpiffeId.parse(spiffe("hades"))
+    assert trust.access_lookups == 0
+
+
+async def test_a_caller_outside_the_list_is_refused_with_the_same_message_after_asking_again(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    world = World()
+    world.callers = ["caller"]
+    trust = world.trust()
+    caplog.set_level(logging.INFO, logger="hermes")
+    with pytest.raises(HermesError) as raised:
+        await world.authenticator_on(trust).authenticate(world.credentials())
+    assert (raised.value.code, raised.value.message) == (ErrorCode.AUTH, AUTH_MESSAGE)
+    assert trust.access_lookups == 1
+    assert reasons(caplog) == ["not_allowed"]
+
+
+@pytest.mark.parametrize("identity", ["hades", "estigia"])
+async def test_with_the_copy_empty_at_version_0_any_authenticated_identity_is_refused(identity: str) -> None:
+    """Story 3, scenario 6: nothing granted, also never, lets no one in."""
+    world = World()
+    world.callers = []
+    leaf, key = world.ca.issue(identity), world.ca.call_key(identity)
+    world.keys.append(key.jwk())
+    trust = world.trust()
+    assert trust.access is not None
+    assert (trust.access.callers, trust.access.version) == ((), 0)
+    token = key.token(issuer=spiffe(identity), audience=HERMES, issued_at=world.clock.now())
+    with pytest.raises(HermesError) as raised:
+        await world.authenticator_on(trust).authenticate(world.credentials(world.presented(leaf), token=token))
+    assert (raised.value.code, raised.value.message) == (ErrorCode.AUTH, AUTH_MESSAGE)
+
+
+async def test_a_grant_counts_in_the_next_call_because_the_lookup_finds_it() -> None:
+    world = World()
+    world.callers = []
+    world.granted = ["hades"]
+    trust = world.trust()
+    caller = await world.authenticator_on(trust).authenticate(world.credentials())
+    assert caller.spiffe_id == SpiffeId.parse(spiffe("hades"))
+    assert trust.access_lookups == 1
+    assert trust.access is not None
+    assert trust.access.callers == ("hades",)
+
+
+async def test_when_hecate_does_not_answer_the_lookup_the_call_is_unavailable() -> None:
+    world = World()
+    world.callers = []
+    world.down = True
+    with pytest.raises(HermesError) as raised:
+        await world.authenticator.authenticate(world.credentials())
+    assert raised.value.code is ErrorCode.UNAVAILABLE
+    assert world.tokens.rows == {}
+
+
+async def test_what_the_token_says_about_permissions_roles_or_access_does_not_count() -> None:
+    """FR-007: only the identity of the certificate, in the list, lets a caller in."""
+    world = World()
+    world.callers = ["caller"]
+    claims = {
+        "cerbero_access": ["hermes"],
+        "cerbero_permissions": ["chat.send_message"],
+        "roles": ["admin"],
+        "scope": "hermes",
+    }
+    await refused(world, world.credentials(token=world.token(extra=claims)))
+
+
+async def test_a_caller_without_access_leaves_no_jti() -> None:
+    world = World()
+    world.callers = []
+    await refused(world, world.credentials(token=world.token(jti="without-access")))
+    assert world.tokens.rows == {}
+
+
+async def test_the_access_is_checked_only_after_the_certificate_and_the_token() -> None:
+    world = World()
+    world.callers = []
+    trust = world.trust()
+    other = TestCa(now=world.clock.now())
+    for credentials in (
+        world.credentials(world.presented(other.issue("hades"), other)),
+        world.credentials(token=world.token(audience=spiffe("hecate"))),
+    ):
+        with pytest.raises(HermesError):
+            await world.authenticator_on(trust).authenticate(credentials)
+    assert trust.access_lookups == 0
+
+
+async def test_without_a_copy_of_the_access_list_hermes_has_nothing_to_authenticate_with() -> None:
+    world = World()
+    world.callers = None
+    trust = world.trust()
+    with pytest.raises(HermesError) as raised:
+        await world.authenticator_on(trust).authenticate(world.credentials())
+    assert raised.value.code is ErrorCode.UNAVAILABLE
+    assert trust.access_lookups == 0

@@ -85,6 +85,7 @@ use hecate_application::secrets::settings::SecretsSettings;
 use hecate_application::testing::MINIMAL_KDF;
 
 use hecate_application::access_policy::service::AccessPolicyService;
+use hecate_application::app_access::service::AppAccessService;
 use hecate_application::ca::service::CaService;
 use hecate_application::ca::settings::CaSettings;
 use hecate_application::identity::service::IdentityService;
@@ -111,6 +112,7 @@ pub struct SqliteStack {
     pub ca: Arc<CaService>,
     pub identities: Arc<IdentityService>,
     pub policies: Arc<AccessPolicyService>,
+    pub access: Arc<AppAccessService>,
 }
 
 impl SqliteStack {
@@ -163,10 +165,17 @@ impl SqliteStack {
             access_log.clone(),
             clock.clone(),
         ));
+        let access = Arc::new(AppAccessService::new(
+            sealing.clone(),
+            identity_store.clone(),
+            access_log.clone(),
+            clock.clone(),
+        ));
         let identities = Arc::new(IdentityService::new(
             sealing.clone(),
             ca.clone(),
             policies.clone(),
+            access.clone(),
             service.clone(),
             identity_store.clone(),
             enroll_attempts.clone(),
@@ -189,6 +198,7 @@ impl SqliteStack {
             ca,
             identities,
             policies,
+            access,
         }
     }
 
@@ -1138,6 +1148,11 @@ impl TestComponent {
     /// permission.
     pub async fn status(&self, addr: SocketAddr) -> Result<Reply, ComponentError> {
         self.query(addr, "/v1/status").await
+    }
+
+    /// The list of access of its own app (`GET /v1/callers`): the identities that may call it.
+    pub async fn callers(&self, addr: SocketAddr) -> Result<Reply, ComponentError> {
+        self.query(addr, "/v1/callers").await
     }
 
     /// Resolves secrets (`POST /v1/secrets:resolve`) with its current certificate and a new

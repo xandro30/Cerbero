@@ -1,5 +1,7 @@
-"""The identity store in files (T054, research R4): the state directory and the generations of the proxy directory."""
+"""The identity store in files (T054, research R4): the state directory and the generations of the proxy directory;
+and the copy of the access list of Hermes (T022 of 009)."""
 
+import json
 import os
 import stat
 from datetime import UTC, datetime, timedelta
@@ -11,6 +13,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from hermes.application.ports import (
+    AccessList,
     IssuedCertificate,
     PendingRenewal,
     PublishedKeys,
@@ -156,3 +159,42 @@ def test_the_last_publications_are_kept(tmp_path: Path) -> None:
     again = store(tmp_path)
     assert again.load_revocations() == RevocationLists(crls_der=(crl,), expires_at=expires)
     assert again.load_keys() == PublishedKeys(keys=({"kid": "k", "cerbero_status": "active"},), expires_at=expires)
+
+
+def access(version: int, *callers: str) -> AccessList:
+    return AccessList(
+        app="hermes", callers=callers, version=version, fetched_at=datetime(2026, 11, 16, 10, version, tzinfo=UTC)
+    )
+
+
+def test_without_its_file_there_is_no_copy_of_the_access_list(tmp_path: Path) -> None:
+    assert store(tmp_path).load_access() is None
+
+
+def test_the_copy_of_the_access_list_is_access_json_0600_and_is_read_back(tmp_path: Path) -> None:
+    saved = access(3, "caller", "hades")
+    store(tmp_path).save_access(saved)
+    state = tmp_path / "state"
+    assert mode(state) == 0o700
+    assert mode(state / "access.json") == 0o600
+    assert store(tmp_path).load_access() == saved
+    assert set(json.loads((state / "access.json").read_text())) == {"app", "callers", "version", "fetched_at"}
+
+
+def test_the_copy_of_the_access_list_is_replaced_at_once_with_a_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = store(tmp_path)
+    files.save_access(access(1, "caller"))
+    renames: list[str] = []
+    original = os.replace
+
+    def recording(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> None:
+        renames.append(Path(target).name)
+        original(source, target)
+
+    monkeypatch.setattr(os, "replace", recording)
+    files.save_access(access(2))
+    assert renames == ["access.json"]
+    assert files.load_access() == access(2)
+    assert [name for name in os.listdir(tmp_path / "state") if name.startswith(".")] == []

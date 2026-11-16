@@ -32,7 +32,7 @@ pub const IDEMPOTENCY_KEY: &str = "idempotency-key";
 const CERTIFICATE: &str = "CERTIFICATE";
 const CRL: &str = "X509 CRL";
 /// The operations of this version of the API, as `GET /v1/capabilities` lists them.
-pub const OPERATIONS: [&str; 8] = [
+pub const OPERATIONS: [&str; 9] = [
     "identities:enroll",
     "certificates:renew",
     "revocations",
@@ -40,6 +40,7 @@ pub const OPERATIONS: [&str; 8] = [
     "keys/{kid}",
     "secrets:resolve",
     "status",
+    "callers",
     "capabilities",
 ];
 
@@ -53,6 +54,7 @@ pub fn routes(identities: Arc<IdentityService>) -> Router {
         .route("/v1/keys/{kid}", get(key))
         .route("/v1/secrets:resolve", post(resolve))
         .route("/v1/status", get(status))
+        .route("/v1/callers", get(callers))
         .route("/v1/capabilities", get(capabilities))
         .with_state(identities)
 }
@@ -75,6 +77,7 @@ pub fn operation_of(method: &Method, path: &str) -> Option<(Operation, AccessMet
         ("GET", "/v1/revocations") => Operation::RevocationList,
         ("GET", "/v1/keys") => Operation::KeyList,
         ("GET", "/v1/status") => Operation::StatusGet,
+        ("GET", "/v1/callers") => Operation::CallersList,
         ("GET", "/v1/capabilities") => Operation::CapabilitiesGet,
         ("GET", path)
             if path
@@ -280,6 +283,23 @@ async fn status(
     })
 }
 
+/// `GET /v1/callers`: the list of access of the app that asks, the only one it can ask for, since
+/// the request has no parameters (US2, FR-006); served, it leaves no row.
+async fn callers(
+    State(identities): State<Arc<IdentityService>>,
+    context: RequestContext,
+    CallCredentials(credentials): CallCredentials,
+) -> Response {
+    let outcome = tokio::task::spawn_blocking(move || identities.callers(&credentials)).await;
+    reply(&context, outcome, |access| {
+        json!({
+            "app": access.app.as_str(),
+            "callers": access.callers().collect::<Vec<_>>(),
+            "version": access.version,
+        })
+    })
+}
+
 /// The data of a resolution as the contract writes it (contracts/formats.md), serialized from
 /// where the values are, so they are not copied before the wiped buffer (FR-016).
 struct ResolvedSecrets<'a>(&'a [Resolved]);
@@ -432,6 +452,19 @@ mod tests {
                 "/v1/status".to_string(),
                 Some((Operation::StatusGet, AccessMethod::Identity)),
             ),
+            (
+                Method::GET,
+                "/v1/callers".to_string(),
+                Some((Operation::CallersList, AccessMethod::Identity)),
+            ),
+            (
+                Method::HEAD,
+                "/v1/callers".to_string(),
+                Some((Operation::CallersList, AccessMethod::Identity)),
+            ),
+            (Method::POST, "/v1/callers".to_string(), None),
+            (Method::GET, "/v1/callers/".to_string(), None),
+            (Method::GET, "/v1/callers/estigia".to_string(), None),
             (Method::POST, "/v1/status".to_string(), None),
             (Method::GET, "/v1/secrets:resolve".to_string(), None),
             (Method::HEAD, "/v1/secrets:resolve".to_string(), None),
@@ -457,6 +490,8 @@ mod tests {
             (Method::POST, "/v1/status", false),
             (Method::GET, "/v1/status/", false),
             (Method::GET, "/v1/keys", false),
+            (Method::GET, "/v1/callers", false),
+            (Method::HEAD, "/v1/callers", false),
             (Method::POST, "/v1/secrets:resolve", false),
             (Method::GET, "/anything", false),
         ] {

@@ -1,4 +1,5 @@
 pub mod access_policy;
+pub mod app_access;
 pub mod ca;
 pub mod events;
 pub mod identity;

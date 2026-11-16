@@ -21,6 +21,7 @@ from hermes.domain.shared.references import SecretReference, SpiffeId
 from hermes.domain.shared.secret import SecretValue
 
 __all__ = [
+    "AccessList",
     "AuditEntry",
     "AuditKind",
     "AuditLog",
@@ -88,24 +89,45 @@ class Authenticator(Protocol):
 
 
 @dataclass(frozen=True)
+class AccessList:
+    """The access list of Hermes as Hécate gave it: the identities that may call it, by name, the version of the list
+    and when Hermes obtained it. Hermes replaces its copy whole; it holds names only."""
+
+    app: str
+    callers: tuple[str, ...]
+    version: int
+    fetched_at: datetime
+
+    def allows(self, identity: str) -> bool:
+        return identity in self.callers
+
+
+@dataclass(frozen=True)
 class TrustMaterial:
-    """What checks a caller: the current root of Cerbero, the SPIFFE ID of Hermes, and the latest CRLs and call keys
-    that Hécate published (FR-008: the last copy holds while Hécate does not answer)."""
+    """What checks a caller: the current root of Cerbero, the SPIFFE ID of Hermes, the latest CRLs and call keys that
+    Hécate published and the copy of the access list of Hermes (FR-008: the last copy holds while Hécate does not
+    answer)."""
 
     root: x509.Certificate
     hermes: SpiffeId
     revocations: tuple[x509.CertificateRevocationList, ...]
     keys: tuple[Mapping[str, Any], ...]
+    access: AccessList
 
 
 class TrustSource(Protocol):
     def material(self) -> TrustMaterial | None:
-        """None while Hermes has no identity or no publications of Hécate yet."""
+        """None while Hermes has no identity, no publications of Hécate or no copy of its access list yet."""
         ...
 
     async def key(self, kid: str) -> Mapping[str, Any] | None:
         """A call key that the last published list does not have yet, asked to Hécate; None if Hécate does not know
         it, and `unavailable` if it does not answer."""
+        ...
+
+    async def lookup_access(self) -> AccessList:
+        """The access list asked to Hécate again, because a caller is not in the copy: the lookups at once share one
+        request, and the new list replaces the copy; `unavailable` if Hécate does not answer."""
         ...
 
 
@@ -297,6 +319,10 @@ class HecateApi(Protocol):
 
     async def key(self, kid: str) -> Mapping[str, Any]: ...
 
+    async def callers(self) -> AccessList:
+        """The access list of Hermes, `GET /v1/callers`: Hécate gives each app its own and no other."""
+        ...
+
     async def resolve(self, references: Sequence[SecretReference]) -> tuple[ResolvedSecret, ...]: ...
 
 
@@ -349,3 +375,7 @@ class IdentityStore(Protocol):
     def load_keys(self) -> PublishedKeys | None: ...
 
     def save_keys(self, keys: PublishedKeys) -> None: ...
+
+    def load_access(self) -> AccessList | None: ...
+
+    def save_access(self, access: AccessList) -> None: ...

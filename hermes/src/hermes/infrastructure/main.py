@@ -162,6 +162,7 @@ class Hermes:
         )
         self.health = HealthCheck(
             identity_problem=self.identity.problem,
+            access_loaded=self.identity.access_loaded,
             database_answers=self._database_answers,
             configuration_loaded=lambda: self.runtime.state.loaded,
         )

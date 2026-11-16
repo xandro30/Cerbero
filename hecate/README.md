@@ -92,8 +92,8 @@ defecto) y con sus claves en el directorio de `--state`:
 cargo run --manifest-path hecate/Cargo.toml --example component -- enroll --token <token> --state /tmp/hermes
 ```
 
-Sus órdenes son `enroll`, `renew`, `keys`, `key <kid>`, `revocations`, `resolve <referencia>...` y `status`, todas con
-`--state <dir>`. Cómo se integra un componente de verdad está en la
+Sus órdenes son `enroll`, `renew`, `keys`, `key <kid>`, `revocations`, `callers`, `resolve <referencia>...` y
+`status`, todas con `--state <dir>`. Cómo se integra un componente de verdad está en la
 [guía de integración](../docs/hecate/integracion.md), que lo toma como cliente de referencia.
 
 ## Organización

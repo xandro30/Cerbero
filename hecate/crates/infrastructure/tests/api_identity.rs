@@ -178,6 +178,7 @@ fn handler(rig: &CaRig, supervisor: &Arc<ApiSupervisor>) -> Arc<RequestHandler> 
             ca: rig.service.clone(),
             identities: rig.identities.clone(),
             policies: rig.policies.clone(),
+            access: rig.access.clone(),
             changed: Arc::new(move || {
                 runtime.block_on(supervisor.tick()).unwrap();
             }),

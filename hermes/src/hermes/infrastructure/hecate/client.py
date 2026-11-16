@@ -23,6 +23,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
 from hermes.application.ports import (
+    AccessList,
     HecateTrustChanged,
     IssuedCertificate,
     PublishedKeys,
@@ -203,6 +204,12 @@ class HecateClient:
         data = await self._call("GET", f"/v1/keys/{quote(kid, safe='')}")
         key: Mapping[str, Any] = data["key"]
         return key
+
+    async def callers(self) -> AccessList:
+        data = await self._call("GET", "/v1/callers")
+        return AccessList(
+            app=data["app"], callers=tuple(data["callers"]), version=data["version"], fetched_at=self._clock.now()
+        )
 
     async def resolve(self, references: Sequence[SecretReference]) -> tuple[ResolvedSecret, ...]:
         data = await self._call("POST", "/v1/secrets:resolve", body={"references": [str(item) for item in references]})

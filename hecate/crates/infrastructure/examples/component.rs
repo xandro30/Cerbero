@@ -13,6 +13,8 @@
 //!   version and its cache times.
 //! - `component status --state <dir>`: the aggregate status of Hécate, with the status
 //!   permission.
+//! - `component callers --state <dir>`: the list of access of its own app, as the data of the
+//!   reply: the app, the identities that may call it and the version of the list.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -24,7 +26,7 @@ use hecate_domain::instant::isoformat;
 use hecate_infrastructure::clock::SystemClock;
 use hecate_infrastructure::testing::{ComponentError, Reply, TestComponent, read_crl};
 
-const USAGE: &str = "usage: component enroll --token <token> --state <dir> [--asks-for <id>] [--repeat]\n       component renew --state <dir> [--from <serial>]\n       component keys --state <dir>\n       component key <kid> --state <dir>\n       component revocations --state <dir>\n       component resolve <reference>... --state <dir>\n       component status --state <dir>";
+const USAGE: &str = "usage: component enroll --token <token> --state <dir> [--asks-for <id>] [--repeat]\n       component renew --state <dir> [--from <serial>]\n       component keys --state <dir>\n       component key <kid> --state <dir>\n       component revocations --state <dir>\n       component resolve <reference>... --state <dir>\n       component status --state <dir>\n       component callers --state <dir>";
 
 /// The fields of the aggregate status, in the order of the contract.
 const STATUS_FIELDS: [&str; 8] = [
@@ -137,6 +139,7 @@ fn print_data(command: &str, data: &serde_json::Value) {
                 println!("{field} {}", data[field]);
             }
         }
+        "callers" => println!("{data}"),
         verb => println!(
             "{}ed {} serial {} until {}",
             verb.trim_end_matches('e'),
@@ -191,6 +194,10 @@ async fn main() -> ExitCode {
         Some("renew") => renew(&component, addr, &args).await,
         Some("keys") => component.keys(addr).await.map_err(|error| fail(error, 1)),
         Some("status") => component.status(addr).await.map_err(|error| fail(error, 1)),
+        Some("callers") => component
+            .callers(addr)
+            .await
+            .map_err(|error| fail(error, 1)),
         Some("revocations") => component
             .revocations(addr)
             .await

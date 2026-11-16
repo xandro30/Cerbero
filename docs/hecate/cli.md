@@ -82,7 +82,7 @@ Hécate atiende las órdenes del canal local de una en una. El canal local y su 
 
 ## Las órdenes
 
-Las trece de primer nivel y sus 32 órdenes finales, agrupadas por concepto. Los errores de cada tabla son los propios
+Las catorce de primer nivel y sus 36 órdenes finales, agrupadas por concepto. Los errores de cada tabla son los propios
 de la orden; los de las convenciones valen para todas.
 
 ### Sellado
@@ -188,6 +188,21 @@ una identidad que aún no se ha dado de alta. Una orden que no cambia nada respo
 | `hecate policies revoke-status <identidad>` | Se lo retira | `revoked status from <identidad> (policy version <n>)` o `unchanged: <identidad> has no status` | — |
 | `hecate policies list` | Las identidades con algún cambio de política, también si ya no tienen nada concedido | `<identidad> version <n> status <yes \| no> reads <n>` por identidad, o `no policies` | — |
 | `hecate policies get <identidad>` | La política vigente y su historial | `policy <identidad> version <n> status <yes \| no>`, una línea `read <ruta>` por excepción, y tras `history`, una por cambio: `<versión> <fecha> <cambio> [<ruta>] by admin` | — |
+
+### Acceso por app
+
+Las órdenes de las [listas de acceso](acceso.md#el-acceso-por-app): qué identidades pueden llamar a cada app. La
+identidad va antes que la app, como en las políticas. Las dos siguen la regla de nombres de las identidades, con un solo
+segmento, ninguna puede ser `hecate` ni `admin` y una app no recibe acceso a sí misma: si no, la orden responde
+`validation`. Se pueden dar a una identidad, o para una app, que aún no se ha dado de alta. Una orden que no cambia nada
+responde `unchanged: ...` y sale con 0.
+
+| Orden | Qué hace | Salida si va bien | Errores propios |
+|---|---|---|---|
+| `hecate access grant <identidad> <app>` | Deja a una identidad llamar a una app, desde su llamada siguiente | `granted <identidad> access to <app> (access version <n>)` o `unchanged: <identidad> already calls <app>` | — |
+| `hecate access revoke <identidad> <app>` | Se lo retira; la app lo aplica al refrescar su copia de la lista | `revoked <identidad> access to <app> (access version <n>)` o `unchanged: <identidad> does not call <app>` | — |
+| `hecate access list` | Las apps con algún cambio en su lista, también si ya no las llama nadie | `<app> version <n> callers <n>` por app, o `no access lists` | — |
+| `hecate access get <app>` | La lista vigente de una app y su historial | `access <app> version <n>`, una línea `caller <identidad>` por identidad y, tras `history`, una por cambio: `<versión> <fecha> <cambio> <identidad> by admin` | — |
 
 ## Relacionado
 
