@@ -145,7 +145,7 @@ reintenta, y sin identidad espera a `hermes enroll`.
 | Un proveedor | Hermes reintenta lo seguro; si no, devuelve `provider_unavailable`, `rate_limited` o `timeout` | El estado de la instancia lo refleja en `/v1/capabilities` |
 | Hécate | Hermes sigue con la caché de secretos (hasta 1 h) y con las últimas publicaciones, su lista de acceso incluida: nadie gana el acceso ni lo pierde por ello, y quien no está en su copia recibe `unavailable`. Pasada la hora, las llamadas que necesitan un secreto fallan con `internal` | Desbloquear Hécate |
 | Su base de datos | Hermes no está listo y los envíos responden `unavailable`: no envía nada que no pueda registrar | Nada: vuelve en cuanto la base responde |
-| Su identidad (caducada, con otra CA o con la renovación rechazada) | Hermes no está listo y lo dice. Tras una revocación urgente, no lo nota hasta que Hécate rechaza su renovación | Un token de alta nuevo y `hermes enroll` ([operación](hermes/operacion.md#la-identidad-de-hermes-deja-de-valer)) |
+| Su identidad (caducada, con otra CA o rechazada por Hécate, como tras una revocación urgente) | Hermes no está listo y lo dice. Nota el rechazo en la primera llamada que Hécate le rechaza, como mucho a los 240 s, y deja de llamar a Hécate con esa identidad | Un token de alta nuevo y `hermes enroll`, sin pararlo ([operación](hermes/operacion.md#la-identidad-de-hermes-deja-de-valer)) |
 
 - El procedimiento de cada situación está en [operación](hermes/operacion.md). La salud dice si Hermes está listo o por
   qué no, y va por el canal local.

@@ -1,20 +1,23 @@
-"""The cache of the secrets (T058, FR-009, SC-004): 300 s without asking; up to 3600 s with Hécate sealed or down."""
+"""The cache of the secrets (T058, FR-009, SC-004): 300 s without asking; up to 3600 s with Hécate sealed or down.
+On the identity service, as `hermes serve` wires it, a refused identity fails as a refusal of Hécate (change 011)."""
 
 from __future__ import annotations
 
 import pytest
 
 from hermes.application.configuration import ConfigurationState
+from hermes.application.identity import IdentityService
 from hermes.application.secrets import SecretCache
 from hermes.application.send_message import SendMessage
 from hermes.domain.services.chat.contract import SendRequest
 from hermes.domain.shared.errors import ErrorCode, HermesError
 from hermes.domain.shared.references import SecretReference
 from hermes.domain.shared.secret import SecretValue
+from hermes.infrastructure.hecate.keys import generate_keys
 from hermes.infrastructure.providers.registry import read_manifest
 from support.clock import FakeClock
 from support.configuration import BOT_TOKEN, BOT_TOKEN_REF, CHAT, DATA, configuration
-from support.doubles import CALLER, MemoryAudit, MemoryChannels, Providers, RecordingProvider
+from support.doubles import CALLER, MemoryAudit, MemoryChannels, MemoryIdentityStore, Providers, RecordingProvider
 from support.fake_hecate import FakeHecate
 from support.pki import TestCa
 
@@ -124,3 +127,45 @@ async def test_the_values_never_show() -> None:
     cached = vars(world.cache)["_values"]
     assert BOT_TOKEN not in repr(cached)
     assert "SecretValue(***)" in repr(cached)
+
+
+class OnTheIdentity:
+    """The cache on the identity service of Hermes, which resolves with its identity (change 011, research R2)."""
+
+    def __init__(self) -> None:
+        self.clock = FakeClock()
+        self.ca = TestCa(now=self.clock.now())
+        self.hecate = FakeHecate(self.ca, self.clock)
+        self.hecate.secrets = {str(PASSWORD): "db-password"}
+        self.service = IdentityService(
+            store=MemoryIdentityStore(), hecate=self.hecate, clock=self.clock, new_keys=generate_keys
+        )
+        self.hecate.caller_serial = self.serial
+        self.cache = SecretCache(self.service, self.clock)
+
+    def serial(self) -> str | None:
+        identity = self.service.identity
+        return identity.certificate.serial if identity is not None else None
+
+
+async def test_with_the_identity_refused_the_value_holds_its_soft_time_and_then_goes_without_asking() -> None:
+    """Research R4: the cache behaves as with a refusal of Hécate, and the blocked resolution never reaches it."""
+    world = OnTheIdentity()
+    await world.service.enroll(SecretValue(world.ca.enrollment_token()))
+    assert await world.cache.resolve(PASSWORD) == SecretValue("db-password")
+    serial = world.serial()
+    assert serial is not None
+    world.hecate.revoke_urgently(serial)
+    await world.service.refresh_publications()
+    assert world.service.problem() is not None
+    calls = world.hecate.authenticated_calls
+    world.clock.advance(299)
+    assert await world.cache.resolve(PASSWORD) == SecretValue("db-password")
+    world.clock.advance(1)
+    with pytest.raises(HermesError) as raised:
+        await world.cache.resolve(PASSWORD)
+    assert raised.value.code is ErrorCode.AUTH
+    with pytest.raises(HermesError) as raised:
+        world.cache.current(PASSWORD)
+    assert raised.value.code is ErrorCode.INTERNAL
+    assert world.hecate.authenticated_calls == calls

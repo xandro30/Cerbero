@@ -5,8 +5,10 @@ It prepares Hécate, grants two components the access to Hermes, enrolls Hermes,
 channel with a message left in the inbox of the fake, sends with the reference client through Envoy, tries the invalid
 credentials of story 2 that the stack can produce (SC-002; an expired certificate is in the tests of the API, because
 Hécate only issues valid ones), checks that a third component without access answers `auth` until the admin grants it
-(change 009), that a revoked certificate and a revoked access answer `auth` after the next refresh and, with PostgreSQL
-stopped, that Hermes is not ready and that the sends are unavailable. The access of `caller` is never revoked.
+(change 009), that a revoked certificate and a revoked access answer `auth` after the next refresh, that an urgent
+revocation of the certificate of Hermes leaves it not ready, without sending, until a new enrollment (change 011) and,
+with PostgreSQL stopped, that Hermes is not ready and that the sends are unavailable. The access of `caller` is never
+revoked.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from hermes.application.authentication import AUTH_MESSAGE
 from hermes.domain.shared.references import SpiffeId
+from hermes.infrastructure.hecate.tls import presented_chain
 from support.caller import SAMPLE_DATA, Caller, call_token, enroll, identity_store
 from support.compose import DEPLOY, Compose, ComposeHecate, compose_command, wait_until
 from support.config_files import FAKE_ONLY_YAML
@@ -61,15 +64,35 @@ def health(compose: Compose) -> tuple[int, str]:
     return done.returncode, done.stdout
 
 
-def refusals(compose: Compose) -> list[str]:
-    """The reasons that Hermes logged for each call it refused, to say why a test failed."""
-    reasons = []
+def logged(compose: Compose, event: str) -> list[dict[str, Any]]:
+    """The lines `event` of the log of Hermes."""
+    entries = []
     for line in compose.logs("hermes").splitlines():
         start = line.find("{")
         entry = json.loads(line[start:]) if start >= 0 and line.rstrip().endswith("}") else {}
-        if entry.get("event") == "auth.refused":
-            reasons.append(str(entry.get("reason")))
-    return reasons
+        if entry.get("event") == event:
+            entries.append(entry)
+    return entries
+
+
+def refusals(compose: Compose) -> list[str]:
+    """The reasons that Hermes logged for each call it refused, to say why a test failed."""
+    return [str(entry.get("reason")) for entry in logged(compose, "auth.refused")]
+
+
+def started(compose: Compose, *services: str) -> dict[str, str]:
+    """When each container started and how many times Docker restarted it."""
+    states = {}
+    for service in services:
+        container = compose.run("ps", "-q", service).stdout.strip()
+        done = subprocess.run(  # noqa: S603
+            ["docker", "inspect", "-f", "{{.State.StartedAt}} {{.RestartCount}}", container],  # noqa: S607
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        states[service] = done.stdout.strip()
+    return states
 
 
 def outbox(compose: Compose) -> list[dict[str, Any]]:
@@ -266,6 +289,43 @@ async def test_a_revoked_certificate_and_a_revoked_access_answer_auth_once_herme
         assert response.status_code == 401
         assert checked(response)["error"]["message"] == AUTH_MESSAGE
     assert len(outbox(stack.compose)) == before
+
+
+async def test_an_urgent_revocation_of_hermes_leaves_it_not_ready_until_a_new_enrollment(stack: Stack) -> None:
+    """Hécate refuses the calls of the revoked certificate, so Hermes is not ready in its next refresh at most, says so
+    once in its log and answers `unavailable` without sending (SC-001, SC-002). A new token enrolls it again without
+    stopping anything or emptying its state directory: it is ready, Envoy presents the new certificate and a send
+    arrives with the configuration and the verified channel of before (SC-003)."""
+    compose = stack.compose
+    containers = started(compose, "hermes", "envoy")
+    serial = json.loads(compose.exec("hermes", "cat", "/var/lib/hermes/state/identity.json"))["serial"]
+    revoked = compose.exec("hecate", "hecate", "certificates", "revoke", serial, "--urgent")
+    assert revoked.startswith(f"revoked {serial}")
+    wait_until(
+        lambda: health(compose) == (1, "not ready: needs a new enrollment token\n"),
+        "hermes noticing that hecate refuses its certificate",
+        timeout=300,
+    )
+    assert [entry.get("serial") for entry in logged(compose, "identity.refused")] == [serial]
+    before = len(outbox(compose))
+    response = await send(stack, f"e2e-hermes-revoked-{uuid.uuid4().hex}")
+    assert response.status_code == 503
+    assert checked(response)["error"]["code"] == "unavailable"
+    assert len(outbox(compose)) == before
+    enrolled = compose.exec("hermes", "hermes", "enroll", stdin=f"{stack.hecate.token('hermes')}\n")
+    found = re.fullmatch(r"enrolled spiffe://cerbero\.test/hermes serial ([0-9a-f]+) until \S+\n", enrolled)
+    assert found, enrolled
+    renewed = found.group(1)
+    assert renewed != serial
+    wait_until(lambda: health(compose) == (0, "ready\n"), "hermes ready again", timeout=120)
+    assert started(compose, "hermes", "envoy") == containers
+    async with asyncio.timeout(10):
+        chain = await presented_chain("127.0.0.1", 19443)
+    assert chain[0].serial_number == int(renewed, 16)
+    response = await send(stack, f"e2e-after-enrollment-{uuid.uuid4().hex}")
+    assert response.status_code == 200, refusals(compose)
+    sent = outbox(compose)[before:]
+    assert [line["chat"] for line in sent] == ["chat-e2e"]
 
 
 async def test_without_postgresql_hermes_is_not_ready_and_the_sends_are_unavailable(stack: Stack) -> None:

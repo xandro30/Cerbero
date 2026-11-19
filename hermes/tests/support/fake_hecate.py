@@ -3,11 +3,13 @@
 It signs the key of each CSR with the test CA, gives the same certificate to the same request, treats another request
 with a certificate already renewed as a second attempt (`auth`), can lose an answer after doing the work, can be sealed,
 resolves its secrets with the cache times of Hécate and gives the access list of Hermes, which the admin changes with
-`grant` and `revoke`.
+`grant` and `revoke`. After `revoke_urgently` it refuses with `auth` every call made with that certificate, as Hécate
+does after an urgent revocation; it counts the authenticated calls, and `hold_next` holds the next one until released.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -58,6 +60,9 @@ class FakeHecate:
     access: list[str] = field(default_factory=list)
     access_version: int = 0
     access_requests: int = 0
+    refused: list[str] = field(default_factory=list)
+    authenticated_calls: int = 0
+    hold_next: asyncio.Event | None = None
     _renewed: dict[str, tuple[str, str]] = field(default_factory=dict)
     _issued: dict[tuple[str, str], IssuedCertificate] = field(default_factory=dict)
     _call_keys: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -69,6 +74,25 @@ class FakeHecate:
             raise HermesError(ErrorCode.UNAVAILABLE, "hecate is sealed")
         if self.fail_next:
             raise self.fail_next.pop(0)
+
+    def revoke_urgently(self, serial: str) -> None:
+        """`hecate certificates revoke <serial> --urgent`, with the serial in hexadecimal as `IssuedCertificate.serial`:
+        from now on every call made with that certificate is refused, and the serial is in the revocation list."""
+        self.refused.append(serial)
+        self.revoked.append(int(serial, 16))
+
+    async def _authenticated(self) -> str | None:
+        """Each authenticated call counts and reads its serial when it starts; `hold_next` holds it until released, and
+        then it is decided with that serial: `auth` if Hécate revoked that certificate urgently."""
+        self.authenticated_calls += 1
+        serial = self.caller_serial()
+        hold, self.hold_next = self.hold_next, None
+        if hold is not None:
+            await hold.wait()
+        self._answering()
+        if serial is not None and serial in self.refused:
+            raise HermesError(ErrorCode.AUTH, "the certificate is revoked")
+        return serial
 
     def _issue(self, csr_pem: str, call_public_pem: str) -> IssuedCertificate:
         request = x509.load_pem_x509_csr(csr_pem.encode("ascii"))
@@ -107,8 +131,7 @@ class FakeHecate:
         return self._issued[request]
 
     async def renew(self, csr_pem: str, call_key_pem: str, idempotency_key: str) -> IssuedCertificate:
-        self._answering()
-        caller = self.caller_serial()
+        caller = await self._authenticated()
         if caller is None:
             raise HermesError(ErrorCode.AUTH, "the call is not authenticated")
         request = (idempotency_key, csr_pem)
@@ -124,7 +147,7 @@ class FakeHecate:
         return self._issued[request]
 
     async def revocations(self) -> RevocationLists:
-        self._answering()
+        await self._authenticated()
         crl = self.ca.crl(self.revoked, this_update=self.clock.now())
         return RevocationLists(
             crls_der=(crl.public_bytes(serialization.Encoding.DER),),
@@ -132,7 +155,7 @@ class FakeHecate:
         )
 
     async def keys(self) -> PublishedKeys:
-        self._answering()
+        await self._authenticated()
         return PublishedKeys(keys=tuple(self._call_keys.values()), expires_at=self.clock.now() + timedelta(seconds=300))
 
     def publish(self, jwk: dict[str, Any]) -> None:
@@ -141,7 +164,7 @@ class FakeHecate:
 
     async def key(self, kid: str) -> Mapping[str, Any]:
         self.key_lookups.append(kid)
-        self._answering()
+        await self._authenticated()
         if kid not in self._call_keys:
             raise HermesError(ErrorCode.NOT_FOUND, "the key does not exist")
         return self._call_keys[kid]
@@ -160,7 +183,7 @@ class FakeHecate:
 
     async def callers(self) -> AccessList:
         self.access_requests += 1
-        self._answering()
+        await self._authenticated()
         return AccessList(
             app=self.identity,
             callers=tuple(sorted(self.access)),
@@ -169,7 +192,7 @@ class FakeHecate:
         )
 
     async def resolve(self, references: Sequence[SecretReference]) -> tuple[ResolvedSecret, ...]:
-        self._answering()
+        await self._authenticated()
         self.resolutions += 1
         if any(str(reference) not in self.secrets for reference in references):
             raise HermesError(ErrorCode.NOT_FOUND, "a reference does not resolve")

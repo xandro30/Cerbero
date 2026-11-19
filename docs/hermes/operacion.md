@@ -14,10 +14,10 @@ de pruebas. Es para el admin.
   ([operar Hécate](../hecate/operacion.md)).
 - `hermes serve` corre en primer plano y se para con SIGINT o SIGTERM. Es un solo proceso asyncio con la API, el canal
   local y sus tareas de fondo: el arranque, la renovación de su certificado, el refresco cada 240 s de las publicaciones
-  de Hécate (la lista de revocación, las claves publicadas y su lista de acceso) y de la contraseña de su base, la
-  limpieza cada 5 minutos de las claves de idempotencia y de los `jti`, y un polling por instancia
-  ([ADR 0011](../adr/0011-pila-hermes.md)). Cómo se deja corriendo como servicio en el home lab es una decisión
-  [abierta](../../DECISIONS.md#abiertas).
+  de Hécate (la lista de revocación, las claves publicadas y su lista de acceso) y de la contraseña de su base, que
+  también pide tras cada alta, la limpieza cada 5 minutos de las claves de idempotencia y de los `jti`, y un polling
+  por instancia ([ADR 0011](../adr/0011-pila-hermes.md)). Cómo se deja corriendo como servicio en el home lab es una
+  decisión [abierta](../../DECISIONS.md#abiertas).
 - **La salud** va por el canal local: `hermes health` dice si Hermes está listo o por qué no, y `hermes health --live`,
   si el proceso responde, que es lo que usa el healthcheck de su contenedor ([CLI](cli.md#las-órdenes)).
 - **El log** de `hermes serve` dice cómo va el arranque: `startup.failed`, con el paso y el motivo, cuando un paso falla
@@ -201,25 +201,41 @@ vuelve a `healthy` cuando ninguna de sus diez llamadas últimas ha fallado; si f
 
 ## La identidad de Hermes deja de valer
 
-**Cuándo:** `hermes health` dice `not ready: needs a new enrollment token`, porque el certificado de Hermes caducó sin
-renovarse, Hécate rechazó su renovación o sustituyó su CA; o el admin revocó con urgencia el certificado de Hermes, por
-ejemplo porque su clave se comprometió.
+**Cuándo:** `hermes health` dice `not ready: needs a new enrollment token`, porque Hermes no tiene identidad, su
+certificado caducó sin renovarse, Hécate sustituyó su CA o Hécate rechazó una llamada hecha con su certificado: tras una
+revocación urgente, por ejemplo porque su clave se comprometió, con su identidad deshabilitada o tras un segundo intento
+de renovar. Hermes nota el rechazo en la primera llamada que Hécate le rechaza, y como mucho en el siguiente refresco de
+sus publicaciones, 240 s después de la revocación.
 
-**Qué pasa mientras:** sin una identidad válida, Hermes no está listo, y su API responde `unavailable`. Tras una
-revocación urgente, Hermes no lo nota hasta que Hécate rechaza su renovación, a los dos tercios de la vida del
-certificado: mientras, `hermes health` sigue diciendo `ready`, su log dice `publications.refresh_failed` con el motivo
-`auth` en cada refresco, y `hermes enroll` responde `conflict`, con el mensaje «hermes already has a valid identity».
+**Qué pasa mientras:**
+
+- Hermes no está listo, y su API responde `unavailable`.
+- Si Hécate rechazó su certificado, Hermes no vuelve a llamar a Hécate con él hasta el alta nueva o un reinicio, y su
+  log dice una vez `identity.refused`, con la serie (`serial`) y la llamada rechazada (`operation`).
+- Tras un reinicio, Hermes lo vuelve a comprobar con Hécate en la primera llamada del arranque, y su salud da el mismo
+  motivo a los pocos segundos.
+- Si Hécate sustituyó su CA, Hermes sigue intentando conectar y vuelve a estar listo solo si Hécate se presenta otra
+  vez con la CA de siempre; con la CA nueva, necesita el alta.
+
+**Qué necesitas:** la identidad de Hermes habilitada en Hécate. `hecate identities list` la muestra como `enrolled`; si
+está `disabled`, habilítala antes con `hecate identities enable hermes`
+([clave de un componente comprometida](../hecate/operacion.md#clave-de-un-componente-comprometida)).
 
 **Pasos:**
 
-1. Tras una revocación urgente, para Hermes, vacía su directorio de estado (`HERMES_STATE_DIR`) y vuelve a arrancarlo:
-   queda sin identidad y espera el alta. Su base no cambia, y la lista de acceso la vuelve a pedir a Hécate.
+1. Espera a que `hermes health` diga `not ready: needs a new enrollment token`. Tras una revocación urgente,
+   `hermes enroll` responde `conflict` («hermes already has a valid identity») hasta que Hermes nota el rechazo.
 2. Crea un token de alta nuevo para Hermes: `hecate tokens create hermes`.
-3. Da de alta a Hermes otra vez: `hermes enroll`, con el token sin eco o desde la entrada estándar.
+3. Da de alta a Hermes otra vez: `hermes enroll`, con el token sin eco o desde la entrada estándar, sin parar Hermes ni
+   vaciar su directorio de estado. El alta descarta la renovación en curso, si la había, y no toca su base.
 
-**Cómo comprobarlo:** antes del alta, `hermes health` dice `not ready: needs a new enrollment token`. `hermes enroll`
-escribe `enrolled spiffe://<trust domain>/hermes serial <serie> until <fecha>`, y `hermes health` vuelve a decir
-`ready`. Envoy toma el certificado nuevo sin reiniciarse.
+**Cómo comprobarlo:** `hermes enroll` escribe `enrolled spiffe://<trust domain>/hermes serial <serie> until <fecha>`,
+con una serie nueva, y en 2 minutos como mucho `hermes health` vuelve a decir `ready`, con la configuración y los
+canales verificados de antes. Envoy toma el certificado nuevo sin reiniciarse.
+
+Si tras el alta Hermes vuelve enseguida a `needs a new enrollment token`, con otra línea `identity.refused`, los relojes
+de Hermes y de Hécate pueden diferir en más de 30 s: Hécate rechaza entonces el token corto de cada llamada, y Hermes no
+lo distingue de una revocación. Otra alta no lo arregla: corrige el reloj y reinicia Hermes.
 
 ## Sin copia de la lista de acceso
 
@@ -277,7 +293,6 @@ export COMPOSE_FILE=hermes/deploy/compose.yaml:hermes/deploy/compose.test.yaml
 | Una orden de Hermes | `docker compose exec hermes hermes <orden>`; si lee la entrada estándar, con `-T` detrás de `exec` |
 | Aplicar la configuración | `docker compose exec -T hermes hermes config apply /dev/stdin --yes < <fichero>`. La entrada estándar es el fichero, así que la orden no puede preguntar: sin `--yes`, enseña los cambios y no aplica nada (`cancelled`), lo que sirve para revisarlos antes |
 | Parar o arrancar un servicio | `docker compose stop <servicio>` y `docker compose start <servicio>` |
-| Vaciar el directorio de estado de Hermes | Con Hermes parado, `docker compose run --rm --no-deps --entrypoint sh hermes -c 'rm -rf /var/lib/hermes/state/*'` |
 | El log de Hermes | `docker compose logs hermes` |
 | Las direcciones | Hécate en `https://127.0.0.1:8443` y Envoy en `https://127.0.0.1:9443`; con `compose.test.yaml`, en los puertos `18443` y `19443` |
 | Las bandejas del fake | Lo enviado, en `docker compose exec hermes cat /home/hermes/fake/<instancia>/outbox.jsonl`; un mensaje que llega, un fichero JSON en `/home/hermes/fake/<instancia>/inbox/` ([las bandejas](proveedores.md#el-proveedor-fake)) |

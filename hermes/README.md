@@ -53,7 +53,8 @@ HECATE_BIN="$PWD/hecate/target/release/hecate" uv run --package cerbero-hermes p
 - **El flujo** levanta el compose de `hermes/deploy/` con `compose.test.yaml`: PostgreSQL, una Hécate de pruebas,
   Hermes con el fake y Envoy, y un cliente de referencia que se da de alta y llama como un componente, con el acceso que
   le concede el admin. Recorre la puesta en marcha, la verificación de un canal, los envíos, las credenciales que no
-  valen, el acceso concedido y retirado, el certificado revocado de un componente y PostgreSQL parado.
+  valen, el acceso concedido y retirado, el certificado revocado de un componente, la revocación urgente del
+  certificado de Hermes y su alta nueva, y PostgreSQL parado.
 - **Envoy** delante de un upstream de eco, y **la recarga** de su certificado tras una renovación real en Hécate, sin
   reiniciarlo ni cortar una conexión abierta.
 - La primera vez construye las imágenes, y la de Hécate se compila desde el repositorio. Sin Docker Compose, el flujo
@@ -145,6 +146,7 @@ entorno (`settings.py`), los sockets, los logs y las tareas de fondo.
 | La base de Hermes y `chat.send_message` con Telegram | [specs/008-hermes-send-message](../specs/008-hermes-send-message/) |
 | La comprobación del acceso por app | [specs/009-app-access](../specs/009-app-access/) |
 | La documentación de referencia | [specs/010-hermes-reference](../specs/010-hermes-reference/) |
+| Hermes nota la revocación urgente de su propio certificado | [specs/011-hermes-own-revocation](../specs/011-hermes-own-revocation/) |
 
 Las decisiones de su pila están en los ADR [0011](../docs/adr/0011-pila-hermes.md),
 [0012](../docs/adr/0012-persistencia-postgresql-comun.md) y [0013](../docs/adr/0013-acceso-por-app.md).
