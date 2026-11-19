@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from hermes.application.ports import HecateApi
+from hermes.application.ports import SecretResolver
 from hermes.domain.shared.clock import Clock
 from hermes.domain.shared.errors import ErrorCode, HermesError
 from hermes.domain.shared.references import SecretReference
@@ -28,8 +28,8 @@ class _Cached:
 
 
 class SecretCache:
-    def __init__(self, hecate: HecateApi, clock: Clock) -> None:
-        self._hecate = hecate
+    def __init__(self, resolver: SecretResolver, clock: Clock) -> None:
+        self._resolver = resolver
         self._clock = clock
         self._values: dict[str, _Cached] = {}
 
@@ -40,7 +40,7 @@ class SecretCache:
         if cached is not None and now - cached.resolved_at < cached.soft:
             return cached.value
         try:
-            [resolved] = await self._hecate.resolve([reference])
+            [resolved] = await self._resolver.resolve([reference])
         except HermesError as error:
             if error.code not in FALLBACK:
                 self._values.pop(key, None)

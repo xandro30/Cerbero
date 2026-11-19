@@ -1,9 +1,12 @@
-"""The client of Hécate against a real Hécate (T060), launched from `HECATE_BIN` with certificates of one hour; and the
-access list of Hermes, with its copy on disk (T026 of 009)."""
+"""The client of Hécate against a real Hécate (T060), launched from `HECATE_BIN` with certificates of one hour; the
+access list of Hermes, with its copy on disk (T026 of 009); and the urgent revocation of the certificate of Hermes, with
+the rows that its calls leave in the access log of Hécate (change 011)."""
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import AsyncIterator
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -11,6 +14,7 @@ import pytest
 from cryptography import x509
 from cryptography.x509.verification import PolicyBuilder, Store
 
+from hermes.application.ports import HecateTrustChanged, StoredIdentity
 from hermes.domain.shared.errors import ErrorCode, HermesError
 from hermes.domain.shared.references import SecretReference
 from hermes.domain.shared.secret import SecretValue
@@ -152,3 +156,88 @@ async def test_with_hecate_sealed_the_calls_are_unavailable(prepared: RunningHec
         assert raised.value.code is ErrorCode.UNAVAILABLE
     finally:
         prepared.unseal()
+
+
+# --- The urgent revocation of Hermes (change 011) -------------------------------------------------------------------
+
+REFUSED = "hecate refused the identity of hermes: it needs a new enrollment token"
+
+
+def access_rows(hecate: RunningHecate, identity: StoredIdentity) -> int:
+    """The rows that the calls of this Hermes leave in the access log of Hécate (docs/hecate/auditoria.md): the ones
+    with its SPIFFE ID as `subject` and its serial. The orders of the admin about Hermes, like the revocation, carry
+    `subject` = `admin`."""
+    database = hecate.base / "data" / "hecate.db"
+    with closing(sqlite3.connect(f"file:{database}?mode=ro", uri=True)) as connection:
+        [(count,)] = connection.execute(
+            "SELECT count(*) FROM access_log WHERE subject = ? AND certificate = ?",
+            (str(identity.certificate.spiffe_id), identity.certificate.serial),
+        ).fetchall()
+    return int(count)
+
+
+def revoke_urgently(hecate: RunningHecate, identity: StoredIdentity) -> None:
+    out = hecate.cli("certificates", "revoke", identity.certificate.serial, "--urgent")
+    assert out.startswith(f"revoked {identity.certificate.serial}"), out
+
+
+async def test_after_an_urgent_revocation_hecate_answers_auth_and_hermes_stops_calling_with_that_certificate(
+    prepared: RunningHecate, hermes: Hermes
+) -> None:
+    """Each refused call leaves a row of Hermes in the access log; the blocked one leaves none (SC-006)."""
+    identity = hermes.identity.identity
+    assert identity is not None
+    revoke_urgently(prepared, identity)
+    rows = access_rows(prepared, identity)
+    with pytest.raises(HermesError) as raised:
+        await hermes.client.revocations()
+    assert raised.value.code is ErrorCode.AUTH
+    assert not isinstance(raised.value, HecateTrustChanged)
+    assert access_rows(prepared, identity) == rows + 1
+    await hermes.identity.refresh_publications()
+    assert hermes.identity.problem() == "needs a new enrollment token"
+    assert access_rows(prepared, identity) == rows + 2
+    with pytest.raises(HermesError) as raised:
+        await hermes.identity.resolve([SecretReference.parse(PASSWORD_REF)])
+    assert (raised.value.code, raised.value.message) == (ErrorCode.AUTH, REFUSED)
+    assert access_rows(prepared, identity) == rows + 2
+
+
+async def test_a_hermes_started_again_on_the_same_directories_finds_out_at_its_first_call(
+    prepared: RunningHecate, hermes: Hermes, tmp_path: Path
+) -> None:
+    """FR-007: the refusal is not saved, so the new start checks it again with Hécate."""
+    identity = hermes.identity.identity
+    assert identity is not None
+    revoke_urgently(prepared, identity)
+    await hermes.identity.refresh_publications()
+    assert hermes.identity.problem() == "needs a new enrollment token"
+    again = hermes_for(prepared.url, tmp_path)
+    try:
+        assert again.identity.problem() is None
+        with pytest.raises(HermesError) as raised:
+            await again.identity.resolve([SecretReference.parse(PASSWORD_REF)])
+        assert raised.value.code is ErrorCode.AUTH
+        assert raised.value.message != REFUSED
+        assert again.identity.problem() == "needs a new enrollment token"
+    finally:
+        await again.client.aclose()
+
+
+async def test_after_the_refusal_a_new_token_enrolls_the_same_hermes_on_the_same_directories(
+    prepared: RunningHecate, hermes: Hermes
+) -> None:
+    """FR-006, story 2: nothing is emptied, and the calls go out again with the new certificate."""
+    identity = hermes.identity.identity
+    assert identity is not None
+    revoke_urgently(prepared, identity)
+    await hermes.identity.refresh_publications()
+    assert hermes.identity.problem() == "needs a new enrollment token"
+    issued = await hermes.identity.enroll(SecretValue(prepared.token()))
+    assert issued.serial != identity.certificate.serial
+    assert hermes.identity.problem() is None
+    stored = hermes.store.load()
+    assert stored is not None
+    assert stored.certificate.serial == issued.serial
+    [resolved] = await hermes.identity.resolve([SecretReference.parse(PASSWORD_REF)])
+    assert resolved.value == SecretValue("test-db-password")

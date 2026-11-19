@@ -36,6 +36,11 @@ quien quiere revisar la seguridad de Hermes; cada mecanismo se desarrolla en su 
   renueva a los dos tercios de su vida, repitiendo la misma petición si se pierde la respuesta.
 - **Las publicaciones de Hécate** (las listas de revocación, las claves publicadas y su lista de acceso) se refrescan
   cada 240 s, y la última copia vale mientras Hécate no responde.
+- **Una identidad que Hécate rechaza deja de valer:** si Hécate responde `auth` a una llamada hecha con su certificado,
+  como tras una revocación urgente, Hermes no está listo y no vuelve a llamar a Hécate con él hasta un alta nueva o un
+  reinicio, que lo comprueba con una sola llamada. Así, el registro de accesos de Hécate deja de ganar filas de Hermes
+  con ese certificado y muestra a quien use la clave robada
+  ([la identidad de Hermes deja de valer](operacion.md#la-identidad-de-hermes-deja-de-valer)).
 - **Hermes habla con Hécate** con TLS fijado a la CA raíz guardada, y comprueba que el servidor es
   `spiffe://<trust domain>/hecate` antes de enviar nada.
 - Ver [Identidad y seguridad](../../ARCHITECTURE.md#6-identidad-y-seguridad) y las
@@ -158,9 +163,9 @@ Cómo se hacen las copias está en [operación](operacion.md).
 - **Los secretos en la memoria de un proceso Python**, que no puede borrarlos: nunca van a disco ni a los logs, y la
   caché los acota.
 - **El acceso local al equipo de Hermes:** quien llega al canal local gestiona Hermes; su protección es la del equipo.
-- **La revocación urgente de su propio certificado:** Hermes no la nota hasta que Hécate rechaza su renovación, porque
-  Hécate ya no le da la lista de revocación que la recoge; mientras, sigue atendiendo con ese certificado
-  ([la identidad de Hermes deja de valer](operacion.md#la-identidad-de-hermes-deja-de-valer)).
+- **La revocación urgente de su propio certificado** se nota en la primera llamada que Hécate le rechaza, como mucho a
+  los 240 s, porque Hécate ya no le da la lista de revocación que la recoge: hasta entonces, Hermes sigue atendiendo con
+  ese certificado ([la identidad de Hermes deja de valer](operacion.md#la-identidad-de-hermes-deja-de-valer)).
 - El detalle y el porqué de los riesgos aceptados están en [DECISIONS](../../DECISIONS.md#riesgos-aceptados).
 
 ## Relacionado

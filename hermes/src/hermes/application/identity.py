@@ -8,8 +8,12 @@
 - **Publications:** the CRLs and the call keys of Hécate and the access list of Hermes, refreshed every 240 s and kept
   on disk; while Hécate does not answer, the last copy holds. A caller that is not in the copy of the list makes Hermes
   ask for it again, with one request at a time, so a grant counts in the next call.
-- **Validity:** without a valid certificate (missing, expired, in the CRL, refused at renewal, or Hécate with another
-  root CA) Hermes is not ready and needs a new enrollment token.
+- **Validity:** without a valid certificate (missing, expired, in the CRL, or Hécate with another root CA) Hermes is not
+  ready and needs a new enrollment token.
+- **Refusals (change 011):** every call made with the identity of Hermes goes through this service, the resolution of
+  its secrets included. A call that Hécate refuses with `auth`, as after an urgent revocation or at a renewal, leaves
+  that identity refused until a new enrollment or a restart; meanwhile no call goes out with it and each one fails as
+  if Hécate had refused it, so the access log of Hécate stops getting rows of Hermes.
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ import asyncio
 import logging
 import re
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -33,15 +37,18 @@ from hermes.application.ports import (
     IssuedCertificate,
     PendingRenewal,
     PublishedKeys,
+    ResolvedSecret,
     RevocationLists,
     StoredIdentity,
     TrustMaterial,
 )
 from hermes.domain.shared.clock import Clock
 from hermes.domain.shared.errors import ErrorCode, HermesError
+from hermes.domain.shared.references import SecretReference
 from hermes.domain.shared.secret import SecretValue
 
 NEEDS_TOKEN = "needs a new enrollment token"  # noqa: S105 (a reason, not a credential)
+REFUSED = "hecate refused the identity of hermes: it needs a new enrollment token"
 RETRY_S = 60.0
 PUBLICATIONS_INTERVAL_S = 240
 ENROLL_ATTEMPTS = 3
@@ -80,7 +87,7 @@ class IdentityService:
         self._lookups: dict[str, asyncio.Future[Mapping[str, Any] | None]] = {}
         self._access: AccessList | None = None
         self._access_lookup: asyncio.Future[AccessList] | None = None
-        self._refused = False
+        self._refused: str | None = None
         self._trust_changed = False
         self._waiting: list[asyncio.Event] = []
 
@@ -122,7 +129,7 @@ class IdentityService:
     def problem(self) -> str | None:
         """None with a valid identity; otherwise why Hermes is not ready."""
         identity = self._identity
-        if identity is None or self._refused or self._trust_changed:
+        if identity is None or self._trust_changed or self._refused == identity.certificate.serial:
             return NEEDS_TOKEN
         if self._clock.now() >= identity.certificate.not_after or self._revoked(identity):
             return NEEDS_TOKEN
@@ -179,7 +186,8 @@ class IdentityService:
         self._store.clear_pending_renewal()
         self._set_identity(identity)
         self._pending = None
-        self._refused = self._trust_changed = False
+        self._refused = None
+        self._trust_changed = False
         logger.info(
             "identity.enrolled", extra={"fields": {"spiffe_id": str(issued.spiffe_id), "serial": issued.serial}}
         )
@@ -215,7 +223,9 @@ class IdentityService:
             )
             self._store.save_pending_renewal(pending)
             self._pending = pending
-        issued = await self._hecate.renew(pending.csr_pem, pending.call_public_pem, pending.idempotency_key)
+        issued = await self._as_hermes(
+            "renew", lambda: self._hecate.renew(pending.csr_pem, pending.call_public_pem, pending.idempotency_key)
+        )
         renewed = StoredIdentity(
             certificate=issued,
             tls_key_pem=pending.tls_key_pem,
@@ -244,8 +254,6 @@ class IdentityService:
             logger.warning("identity.renewal_failed", extra={"fields": {"reason": "hecate_trust_changed"}})
             return RETRY_S
         except HermesError as error:
-            if error.code is ErrorCode.AUTH:
-                self._refused = True
             logger.warning("identity.renewal_failed", extra={"fields": {"reason": error.code.value}})
             return RETRY_S
         renew_at = self.renew_at()
@@ -258,9 +266,9 @@ class IdentityService:
         self._store.save_access(access)
 
     async def _fetch_publications(self) -> None:
-        revocations = await self._hecate.revocations()
-        keys = await self._hecate.keys()
-        access = await self._hecate.callers()
+        revocations = await self._as_hermes("revocations", self._hecate.revocations)
+        keys = await self._as_hermes("keys", self._hecate.keys)
+        access = await self._as_hermes("callers", self._hecate.callers)
         self._set_revocations(revocations)
         self._keys = keys
         self._asked_keys.clear()
@@ -294,7 +302,7 @@ class IdentityService:
 
     async def _ask_key(self, kid: str) -> Mapping[str, Any] | None:
         try:
-            found = await self._hecate.key(kid)
+            found = await self._as_hermes("key", lambda: self._hecate.key(kid))
         except HermesError as error:
             if error.code is ErrorCode.NOT_FOUND:
                 return None
@@ -317,7 +325,7 @@ class IdentityService:
 
     async def _ask_access(self) -> AccessList:
         try:
-            access = await self._hecate.callers()
+            access = await self._as_hermes("callers", self._hecate.callers)
         except HermesError:
             raise HermesError(ErrorCode.UNAVAILABLE, "hecate does not answer about the access list") from None
         self._set_access(access)
@@ -328,3 +336,38 @@ class IdentityService:
         if self._crls and self._keys is not None and self._access is not None:
             return
         await self._fetch_publications()
+
+    # --- Secrets ---------------------------------------------------------------------------------------------------
+
+    async def resolve(self, references: Sequence[SecretReference]) -> tuple[ResolvedSecret, ...]:
+        """The secrets of Hermes, resolved with its identity (`SecretResolver`): the cache of the secrets and the check
+        of the configuration ask here, not the client of Hécate."""
+        return await self._as_hermes("resolve", lambda: self._hecate.resolve(references))
+
+    # --- Calls with the identity of Hermes -------------------------------------------------------------------------
+
+    async def _as_hermes[T](self, operation: str, call: Callable[[], Awaitable[T]]) -> T:
+        """Each call to Hécate with the identity of Hermes (research R2 to R5 of change 011). While Hécate refuses the
+        current identity, the call does not go out and fails as if Hécate had refused it. Hécate refusing a call with
+        `auth`, unless it presents another root CA, leaves refused the identity that made the call if it is still the
+        current one: the refusal of a call made before an enrollment does not count for the new identity (FR-004)."""
+        identity = self._identity
+        if identity is not None and self._refused == identity.certificate.serial:
+            raise HermesError(ErrorCode.AUTH, REFUSED)
+        try:
+            return await call()
+        except HecateTrustChanged:
+            raise
+        except HermesError as error:
+            if error.code is ErrorCode.AUTH and identity is not None and self._identity is identity:
+                self._refuse(identity, operation)
+            raise
+
+    def _refuse(self, identity: StoredIdentity, operation: str) -> None:
+        """The mark lives only in memory (FR-007); its line goes once per refused identity, with the serial and the call
+        that Hécate refused, and nothing secret."""
+        serial = identity.certificate.serial
+        if self._refused == serial:
+            return
+        self._refused = serial
+        logger.warning("identity.refused", extra={"fields": {"serial": serial, "operation": operation}})

@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Protocol
 
-from hermes.application.ports import AuditEntry, AuditKind, ConfigRepository, HecateApi
+from hermes.application.ports import AuditEntry, AuditKind, ConfigRepository, SecretResolver
 from hermes.domain.configuration.diff import Change, diff, plan_digest
 from hermes.domain.configuration.digest import configuration_digest
 from hermes.domain.configuration.model import Configuration
@@ -62,14 +62,14 @@ class HecateSecretChecker:
     """Rule 9: each reference that is new or changes must resolve in Hécate; if Hécate does not answer, nothing is
     applied. Each one is asked on its own, so the file says which one fails."""
 
-    def __init__(self, hecate: HecateApi) -> None:
-        self._hecate = hecate
+    def __init__(self, resolver: SecretResolver) -> None:
+        self._resolver = resolver
 
     async def unresolved(self, references: Mapping[str, SecretReference]) -> list[Problem]:
         problems = []
         for path, reference in references.items():
             try:
-                await self._hecate.resolve([reference])
+                await self._resolver.resolve([reference])
             except HermesError as error:
                 if error.code is not ErrorCode.NOT_FOUND:
                     raise HermesError(

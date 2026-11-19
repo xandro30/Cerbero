@@ -108,7 +108,7 @@ arranque la conecta y la migra, responden `unavailable`. `hermes health` da el p
 
 | Motivo | Qué le falta a Hermes |
 |---|---|
-| `needs a new enrollment token` | Una identidad válida: no se ha dado de alta, o su certificado caducó, es de otra CA o Hécate rechazó su renovación, como tras una revocación urgente. Se arregla con un token de alta nuevo y `hermes enroll` ([la identidad de Hermes deja de valer](operacion.md#la-identidad-de-hermes-deja-de-valer)) |
+| `needs a new enrollment token` | Una identidad válida: no se ha dado de alta, o su certificado caducó, es de otra CA o Hécate rechazó una de sus llamadas, como tras una revocación urgente, que Hermes nota en la primera llamada rechazada. Se arregla con un token de alta nuevo y `hermes enroll`, sin pararlo ([la identidad de Hermes deja de valer](operacion.md#la-identidad-de-hermes-deja-de-valer)) |
 | `access list not loaded` | Una copia de su lista de acceso, ni guardada ni obtenida de Hécate |
 | `database unavailable` | Su base, que no responde |
 | `configuration not loaded` | La configuración de su base, sin leer o rechazada al validarla (p. ej. usa el `fake` sin `HERMES_FAKE_PROVIDERS=enabled`) |

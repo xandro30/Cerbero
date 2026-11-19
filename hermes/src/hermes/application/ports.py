@@ -44,6 +44,7 @@ __all__ = [
     "PublishedKeys",
     "ResolvedSecret",
     "RevocationLists",
+    "SecretResolver",
     "SecretSource",
     "StoredIdentity",
     "TrustMaterial",
@@ -138,6 +139,13 @@ class SecretSource(Protocol):
     async def resolve(self, reference: SecretReference) -> SecretValue:
         """The value of a secret, from Hécate or its cache; never written to disk or logs."""
         ...
+
+
+class SecretResolver(Protocol):
+    """Who resolves the secrets of Hermes in Hécate, all or none: the client of Hécate, or the identity service in front
+    of it, which does not call while Hécate refuses its identity (research R2 of change 011)."""
+
+    async def resolve(self, references: Sequence[SecretReference]) -> tuple[ResolvedSecret, ...]: ...
 
 
 # --- The database -----------------------------------------------------------------------------------------------

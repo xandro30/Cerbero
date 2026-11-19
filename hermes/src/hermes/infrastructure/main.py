@@ -3,8 +3,8 @@
 The two sockets open first, so the local channel answers from the start, also its health. Then the start follows its
 steps: identity, publications of Hécate, password of the database, connection, migrations, configuration, test of each
 instance and polling. Once the database has its tables, the API can send and the local channel can configure. In the
-background, the renewal of the certificate, the publications every 240 s, the password of the database, the purge of
-the `jti` and of the keys of idempotency and, once ready, one polling per instance.
+background, the renewal of the certificate, the publications every 240 s, the password of the database every 240 s and
+after each enrollment, the purge of the `jti` and of the keys of idempotency and, once ready, one polling per instance.
 """
 
 from __future__ import annotations
@@ -145,7 +145,7 @@ class Hermes:
         )
         self.identity = IdentityService(store=store, hecate=self.hecate, clock=self.clock, new_keys=generate_keys)
         self.identity.load()
-        self.cache = SecretCache(self.hecate, self.clock)
+        self.cache = SecretCache(self.identity, self.clock)
         self.secrets: SecretSource = secrets if secrets is not None else self.cache
         self.http = httpx.AsyncClient()
         self.providers = load_registry(
@@ -262,7 +262,7 @@ class Hermes:
             write=write_configuration,
             manifests=self.manifests,
             fake_enabled=self.settings.fake_providers,
-            secrets=HecateSecretChecker(self.hecate),
+            secrets=HecateSecretChecker(self.identity),
             clock=self.clock,
             applied=self._sync_polling,
         )
@@ -310,6 +310,17 @@ class Hermes:
         if self.secrets is self.cache and self.runtime.engine is not None:
             await self.cache.resolve(self.settings.database_password_ref)
 
+    async def _password_after_enrollments(self) -> None:
+        """The password of the database again as soon as each enrollment ends (research R7 of change 011): while Hécate
+        refused the identity, the cache could drop it, and a new connection takes it from the cache without waiting. A
+        failure is logged with its type only, as the refresh of every 240 s does, which asks for it again later."""
+        while True:
+            await self.identity.wait_for_enrollment()
+            try:
+                await self._refresh_password()
+            except Exception as error:
+                logger.warning("secrets.refresh.failed", extra={"fields": {"reason": type(error).__name__}})
+
     async def _purge_used_tokens(self) -> None:
         await RuntimeUsedTokens(self.runtime).purge(self.clock.now())
 
@@ -328,6 +339,7 @@ class Hermes:
             asyncio.create_task(
                 every(SECRETS_INTERVAL_S, self._refresh_password, name="secrets.refresh"), name="secrets"
             ),
+            asyncio.create_task(self._password_after_enrollments(), name="secrets.enrollment"),
             asyncio.create_task(every(PURGE_INTERVAL_S, self._purge_used_tokens, name="tokens.purge"), name="purge"),
             asyncio.create_task(
                 every(PURGE_INTERVAL_S, self._purge_idempotency_keys, name="idempotency.purge"), name="idempotency"
