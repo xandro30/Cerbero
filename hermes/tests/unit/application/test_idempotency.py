@@ -1,4 +1,5 @@
-"""The flow of research R11 (T090, FR-016): one lock per caller and key, and the row of each key."""
+"""The flow of research R11 (T090, FR-016): one lock per caller and key, and the row of each key; a failure without
+send releases it (T006 of 012)."""
 
 import asyncio
 from datetime import datetime, timedelta
@@ -31,12 +32,20 @@ def unknown_entry(key: str = KEY, at: datetime = START) -> AuditEntry:
     return AuditEntry(at=at, kind=AuditKind.SEND, actor=CALLER, outcome=outcome, idempotency_key=key)
 
 
-class Perform:
-    """A request that reserves its key, reaches the provider and completes it; it can fail before the provider."""
+def failed_entry(key: str = KEY) -> AuditEntry:
+    """The entry of a send that failed without sending anything, which releases its key (012, research R2)."""
+    outcome = {"status": "failed", "code": "provider_unavailable", "outcome_unknown": False}
+    return AuditEntry(at=START, kind=AuditKind.SEND, actor=CALLER, outcome=outcome, idempotency_key=key)
 
-    def __init__(self, *, fail_before: bool = False, wait: asyncio.Event | None = None) -> None:
+
+class Perform:
+    """A request that reserves its key, reaches the provider and completes it; it can fail before the provider, or
+    fail without sending anything and release its key."""
+
+    def __init__(self, *, fail_before: bool = False, release: bool = False, wait: asyncio.Event | None = None) -> None:
         self.calls = 0
         self.fail_before = fail_before
+        self.release = release
         self.wait = wait
 
     async def __call__(self, reservation: Reservation) -> StoredResponse:
@@ -46,6 +55,9 @@ class Perform:
         await reservation.reserve(unknown_entry())
         if self.wait is not None:
             await self.wait.wait()
+        if self.release:
+            await reservation.release(failed_entry())
+            raise HermesError(ErrorCode.PROVIDER_UNAVAILABLE, "the provider does not answer")
         await reservation.complete(SENT, audit_entry(KEY))
         return SENT
 
@@ -119,6 +131,40 @@ async def test_requests_with_the_same_key_at_once_run_one_by_one_and_only_the_fi
     release.set()
     assert await asyncio.gather(*tasks) == [SENT] * 10
     assert perform.calls == 1
+
+
+async def test_a_released_reservation_leaves_no_row_and_its_entry_in_the_audit_log() -> None:
+    """A failure that guarantees nothing was sent keeps nothing (012, research R2)."""
+    repository = MemoryIdempotency()
+    reservation = Reservation(repository, CALLER, KEY, FINGERPRINT)
+    await reservation.reserve(unknown_entry())
+    await reservation.release(failed_entry())
+    assert await repository.find(CALLER, KEY) is None
+    assert repository.pending == {}
+    assert repository.audit.entries == [failed_entry()]
+    assert reservation.response is None
+
+
+async def test_after_a_released_request_the_next_one_with_the_same_key_reserves_it_and_runs() -> None:
+    """Two equal requests at once: the first fails without sending anything, so the second finds no row and reaches
+    the provider itself (edge case of story 1 of 012)."""
+    idempotency, repository, _ = flow()
+    go = asyncio.Event()
+    failing = Perform(release=True, wait=go)
+    sending = Perform()
+    first = asyncio.create_task(run(idempotency, failing))
+    second = asyncio.create_task(run(idempotency, sending))
+    await asyncio.sleep(0)
+    go.set()
+    with pytest.raises(HermesError) as raised:
+        await first
+    assert raised.value.code is ErrorCode.PROVIDER_UNAVAILABLE
+    assert await second == SENT
+    assert (failing.calls, sending.calls) == (1, 1)
+    record = await repository.find(CALLER, KEY)
+    assert record is not None
+    assert (record.state, record.response) == (KeyState.COMPLETED, SENT)
+    assert [entry.outcome["status"] for entry in repository.audit.entries] == ["failed", "completed"]
 
 
 async def test_the_lock_of_a_key_goes_away_when_no_request_holds_it() -> None:

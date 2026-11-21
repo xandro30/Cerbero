@@ -73,12 +73,12 @@ Los códigos son cerrados y comunes a Cerbero:
 | `validation` | 400 | No | La petición no cumple el contrato |
 | `auth` | 401 | No | Las credenciales no valen o quien llama no tiene acceso |
 | `not_found` | 404 | No | La plantilla, la versión, la instancia o el contacto no existen |
-| `conflict` | 409 | No | Operación no permitida en el estado actual (un canal sin verificar, la persona que no admite mensajes del bot) o una clave de idempotencia con otro cuerpo |
+| `conflict` | 409 | No | Operación no permitida en el estado actual (un canal sin verificar, la persona que no admite mensajes del bot) o una clave de idempotencia que ya guarda otra petición |
 | `rate_limited` | 429, con `Retry-After` | Sí | Se acabó el límite de uso de la instancia, o el proveedor pide esperar más de lo que cabe |
 | `provider_unavailable` | Solo llega del proveedor | Sí, salvo si el proveedor rechaza la petición o las credenciales | El proveedor no responde o falla sin haber hecho nada, o rechaza la petición o las credenciales de la instancia |
-| `timeout` | Solo llega del proveedor | No, con `outcome_unknown` | No se sabe si la petición se ejecutó en el proveedor |
+| `timeout` | Solo llega del proveedor | No, con `outcome_unknown` | No se sabe si la petición se ejecutó en el proveedor, también tras un fallo inesperado de Hermes al llamarlo |
 | `unavailable` | 503 | Sí | Hermes no puede atender ahora |
-| `internal` | 500 | Sí | Un fallo inesperado |
+| `internal` | 500 | Sí | Un fallo inesperado antes de llegar al proveedor |
 
 **El estado HTTP:** toda respuesta que llegó al proveedor, se completara o fallara, lleva 200, y su fallo va dentro del
 sobre con su código: también un `rate_limited` del proveedor, que lleva su espera en `retry_after_s` y no en la

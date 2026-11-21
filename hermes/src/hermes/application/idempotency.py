@@ -5,8 +5,9 @@
    `in_progress`, left by a cut, answers that the outcome is unknown, and the row keeps that answer together with the
    audit entry of its send, which its reservation kept (FR-029).
 3. Without a row: the request runs, and only right before the provider it reserves its key with the audit entry of its
-   send if its outcome stays unknown; with the result, the row is completed in the same transaction as its audit
-   entry. A request that fails before the provider leaves no row.
+   send if its outcome stays unknown; with what was sent or may have been sent, the row is completed in the same
+   transaction as its audit entry, and with a failure that guarantees nothing was sent, it is released with it
+   (research R2 of 012). A request that fails before the provider leaves no row.
 """
 
 from __future__ import annotations
@@ -48,7 +49,8 @@ class KeyLocks:
 
 
 class Reservation:
-    """The row of a new key: reserved right before the provider, completed with the response and its audit entry."""
+    """The row of a new key: reserved right before the provider; completed with what was sent or may have been sent,
+    with its response and its audit entry, or released with the audit entry of a failure without send."""
 
     def __init__(self, repository: IdempotencyRepository, caller: str, key: str, fingerprint: bytes) -> None:
         self._repository = repository
@@ -65,6 +67,11 @@ class Reservation:
     async def complete(self, response: StoredResponse, audit: AuditEntry) -> None:
         await self._repository.complete(self._caller, self._key, response, audit)
         self.response = response
+
+    async def release(self, audit: AuditEntry) -> None:
+        """The key goes away with the audit entry of an attempt that failed without sending anything: the next request
+        with it is a new one, and `response` stays empty."""
+        await self._repository.release(self._caller, self._key, audit)
 
 
 class Idempotency:

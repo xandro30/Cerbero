@@ -99,7 +99,7 @@ En `hermes/tests/support/`:
 | `compose.py` | El compose de `hermes/deploy/` para el E2E, con su Hécate preparada por su CLI |
 | `postgres.py` | Un PostgreSQL de usar y tirar, con la base y el usuario `hermes` y otra base a la que `hermes` no llega |
 | `audit_log.py` | La tabla de la auditoría como la ven las pruebas, y una base que se niega a escribir una fila más |
-| `network_api.py` | La API de red con dobles de sus ports, el fake y Telegram con respuestas grabadas |
+| `network_api.py` | La API de red con dobles de sus ports, el fake y Telegram con respuestas grabadas; las claves, en memoria o en el PostgreSQL que le pase la prueba |
 | `telegram.py` y `telegram_recordings/` | Respuestas grabadas de la Bot API de Telegram, para respx |
 | `doubles.py` | Dobles de los ports: quien llama, los canales, la auditoría, los secretos, un proveedor de chat y la confianza de Hermes con la copia de su lista de acceso |
 | `configuration.py` y `config_files.py` | Una configuración de pruebas (una instancia de Telegram, una del fake, una plantilla con dos versiones y tres contactos), como objeto y como fichero |
@@ -147,6 +147,8 @@ entorno (`settings.py`), los sockets, los logs y las tareas de fondo.
 | La comprobación del acceso por app | [specs/009-app-access](../specs/009-app-access/) |
 | La documentación de referencia | [specs/010-hermes-reference](../specs/010-hermes-reference/) |
 | Hermes nota la revocación urgente de su propio certificado | [specs/011-hermes-own-revocation](../specs/011-hermes-own-revocation/) |
+| El contrato de llamada: repetir con la misma clave y el `kid` del token | [specs/012-hermes-call-contract](../specs/012-hermes-call-contract/) |
 
-Las decisiones de su pila están en los ADR [0011](../docs/adr/0011-pila-hermes.md),
-[0012](../docs/adr/0012-persistencia-postgresql-comun.md) y [0013](../docs/adr/0013-acceso-por-app.md).
+Las decisiones de Hermes están en los ADR [0011](../docs/adr/0011-pila-hermes.md),
+[0012](../docs/adr/0012-persistencia-postgresql-comun.md), [0013](../docs/adr/0013-acceso-por-app.md) y
+[0014](../docs/adr/0014-clave-de-idempotencia-hermes.md).

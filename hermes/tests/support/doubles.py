@@ -108,8 +108,9 @@ class MemoryAudit:
 
 class MemoryIdempotency:
     """The keys of idempotency in memory, with the semantics of the SQL repository: the response of a key and its audit
-    entry go together, and a key in progress keeps the entry of its send with an unknown outcome until it completes
-    or the purge removes it."""
+    entry go together, a key released by a send that failed without sending anything goes away with its audit entry,
+    and a key in progress keeps the entry of its send with an unknown outcome until it completes or the purge removes
+    it."""
 
     def __init__(self, audit: MemoryAudit | None = None) -> None:
         self.audit = audit if audit is not None else MemoryAudit()
@@ -130,6 +131,13 @@ class MemoryIdempotency:
         record, at = self.rows[(caller, key)]
         await self.audit.append(audit)
         self.rows[(caller, key)] = (replace(record, state=KeyState.COMPLETED, response=response), at)
+        self.pending.pop((caller, key), None)
+
+    async def release(self, caller: str, key: str, audit: AuditEntry) -> None:
+        await self.audit.append(audit)
+        row = self.rows.get((caller, key))
+        if row is not None and row[0].state is KeyState.IN_PROGRESS:
+            del self.rows[(caller, key)]
         self.pending.pop((caller, key), None)
 
     async def complete_unknown(self, caller: str, key: str, response: StoredResponse) -> None:

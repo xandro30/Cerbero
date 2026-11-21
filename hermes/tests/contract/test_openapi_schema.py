@@ -1,4 +1,5 @@
-"""The published contracts (T005): OpenAPI 3.1 in JSON, every $ref resolved and the examples of contracts/api.md."""
+"""The published contracts (T005): OpenAPI 3.1 in JSON, every $ref resolved and the examples of contracts/api.md; the
+kid of the call token and the rule of the repetition (T008 of 012)."""
 
 import copy
 from typing import Any
@@ -87,7 +88,7 @@ REQUEST = {
 
 
 def test_both_documents_are_openapi_3_1_with_their_license_and_version() -> None:
-    for name, version in (("common.v1.json", "1.1.0"), ("hermes.v1.json", "1.0.1")):
+    for name, version in (("common.v1.json", "1.1.0"), ("hermes.v1.json", "1.0.2")):
         document = load_document(name)
         assert document["openapi"] == "3.1.0", name
         assert document["info"]["version"] == version, name
@@ -117,6 +118,32 @@ def test_hermes_only_has_the_three_operations() -> None:
         ("/v1/capabilities", "get"): "getCapabilities",
         ("/v1/instances/{name}/test", "post"): "testInstance",
     }
+
+
+def test_the_call_token_says_that_its_header_carries_the_kid() -> None:
+    """The kid by which Hermes chooses the call signing key of the caller, and auth without it (FR-007 of 012)."""
+    description = load_document("hermes.v1.json")["components"]["securitySchemes"]["callToken"]["description"]
+    assert "Its header carries alg EdDSA, typ JWT and kid" in description
+    assert "a token without kid answers auth" in description
+
+
+def test_the_idempotency_key_says_what_it_keeps_and_what_a_repetition_receives() -> None:
+    """What Hades depends on to repeat a step (FR-008 of 012)."""
+    description = load_document("hermes.v1.json")["components"]["parameters"]["IdempotencyKey"]["description"]
+    assert "a completed send, or a timeout with outcome_unknown" in description
+    assert "while the key is kept, the same key with another body is conflict" in description
+    assert "keeps nothing: the next request with that key is a new attempt" in description
+
+
+def test_the_responses_of_send_message_say_where_each_failure_goes() -> None:
+    paths = load_document("hermes.v1.json")["paths"]
+    send = paths["/chat/v1/send_message"]["post"]["responses"]
+    assert "also after an unexpected failure while calling the provider" in send["200"]["description"]
+    assert "the Idempotency-Key is kept for another request" in send["409"]["description"]
+    assert send["500"]["description"].startswith("An unexpected failure before reaching the provider")
+    for path, method in (("/v1/capabilities", "get"), ("/v1/instances/{name}/test", "post")):
+        description = paths[path][method]["responses"]["500"]["description"]
+        assert description == "An unexpected failure, or a secret past its hard cache time.", path
 
 
 @pytest.mark.parametrize(

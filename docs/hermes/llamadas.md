@@ -81,10 +81,14 @@ con su identidad, así que dos componentes pueden usar la misma clave sin chocar
 
 - **La misma clave con el mismo cuerpo** devuelve la misma respuesta, también si las dos peticiones llegan a la vez, sin
   repetir el efecto.
-- **La misma clave con otro cuerpo** responde `conflict`, como fija el contrato común.
-- **La reserva:** la clave se reserva justo antes de llamar al proveedor y se completa con la respuesta en la misma
-  transacción que la entrada de auditoría. Una petición que falla antes de llegar al proveedor no deja clave y se puede
-  repetir.
+- **La misma clave con otro cuerpo** responde `conflict` mientras la clave guarda otra petición, como fija el contrato
+  común; tras un fallo sin envío o antes del proveedor, es una petición nueva.
+- **La reserva:** la clave se reserva justo antes de llamar al proveedor. Se completa con lo que se envió o pudo
+  enviarse, un envío completado o un `timeout` con `outcome_unknown`, en la misma transacción que la entrada de
+  auditoría. Un fallo que garantiza que no se envió nada la libera, también en la misma transacción que su entrada, y
+  una petición que falla antes de llegar al proveedor no llega a reservarla: las dos se repiten con la misma clave
+  ([ADR 0014](../adr/0014-clave-de-idempotencia-hermes.md)). Si la base no responde al liberarla, la clave sigue
+  reservada, como tras un corte.
 - **Un corte** que deja una clave a medias hace que la repetición responda `timeout` con `outcome_unknown`, sin volver a
   enviar. La reserva guarda la entrada de auditoría del envío con ese resultado, así que el envío queda atribuido aunque
   el corte se lleve su registro: la escribe la repetición o, si nadie repite la petición, la limpieza de las claves.
@@ -98,13 +102,15 @@ con su identidad, así que dos componentes pueden usar la misma clave sin chocar
   que pida el proveedor y no pasa del timeout técnico de la función.
 - **Si la espera del proveedor no cabe** en ese timeout, responde `rate_limited` con ese tiempo; si se acaba el tiempo
   sin conectar, `provider_unavailable`.
-- **Hades** solo reintenta un bloque si el sobre dice `retryable`.
+- **Hades** solo reintenta un bloque si el sobre dice `retryable`, y lo hace con la misma clave: un fallo `retryable`
+  garantiza que no se envió nada, así que no deja la clave ([la idempotencia](#la-idempotencia)).
 
 ## El resultado desconocido
 
-Ante un resultado ambiguo (p. ej. un corte después de enviar algo con efecto, o un 5xx al enviar), Hermes no reintenta:
-devuelve `timeout` con `retryable: false` y `outcome_unknown: true`. Repetir la misma petición con la misma clave no
-vuelve a enviar: responde lo mismo.
+Ante un resultado ambiguo (p. ej. un corte después de enviar algo con efecto, un 5xx al enviar o un fallo inesperado de
+Hermes mientras llama al proveedor), Hermes no reintenta: devuelve `timeout` con `retryable: false` y
+`outcome_unknown: true`, y la clave lo guarda. Repetir la misma petición con la misma clave no vuelve a enviar: responde
+lo mismo.
 
 ## Los timeouts
 

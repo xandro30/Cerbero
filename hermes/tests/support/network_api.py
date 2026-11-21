@@ -1,5 +1,6 @@
 """The network API of Hermes with doubles of its ports: the authenticator, the channels, the secrets and the keys in
-memory, the fake provider and Telegram against recorded answers (respx)."""
+memory (or the repository of keys that the test gives it, like the PostgreSQL one), the fake provider and Telegram
+against recorded answers (respx)."""
 
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ import respx
 from hermes.application.capabilities import Capabilities, InstanceStatuses
 from hermes.application.configuration import ConfigurationState
 from hermes.application.idempotency import Idempotency
+from hermes.application.ports import IdempotencyRepository
 from hermes.application.send_message import SendMessage
 from hermes.infrastructure.api.app import create_network_api
 from hermes.infrastructure.api.auth import Authentication, install_authentication
@@ -38,7 +40,14 @@ SEND = f"/bot{BOT_TOKEN}/sendMessage"
 
 
 class NetworkApi:
-    def __init__(self, http: httpx.AsyncClient, router: respx.MockRouter, *, loaded: bool = True) -> None:
+    def __init__(
+        self,
+        http: httpx.AsyncClient,
+        router: respx.MockRouter,
+        *,
+        loaded: bool = True,
+        keys: IdempotencyRepository | None = None,
+    ) -> None:
         self.clock = FakeClock()
         self.router = router
         self.fake = FakeProvider(read_manifest("fake"), self.clock, sleep=self.clock.sleep, jitter=lambda: 1.0)
@@ -68,7 +77,7 @@ class NetworkApi:
         install_authentication(
             self.app, Authentication(authenticator=AcceptingAuthenticator(), ready=lambda: send.ready)
         )
-        idempotency = Idempotency(MemoryIdempotency(self.audit), self.clock)
+        idempotency = Idempotency(keys if keys is not None else MemoryIdempotency(self.audit), self.clock)
         install_chat(self.app, ChatServices(send_message=send, idempotency=idempotency))
         install_capabilities(self.app, CapabilitiesServices(capabilities=capabilities))
 

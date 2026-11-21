@@ -1,4 +1,4 @@
-"""The keys of idempotency in their table (T089, T122, research R11), on the throwaway PostgreSQL."""
+"""The keys of idempotency in their table (T089, T122, research R11; T005 of 012), on the throwaway PostgreSQL."""
 
 from dataclasses import replace
 from datetime import timedelta
@@ -52,6 +52,11 @@ def unknown(at: Any = START, key: str = KEY) -> AuditEntry:
         audit_context={"source": "test", "playbook": "pb-1"},
         idempotency_key=key,
     )
+
+
+def failed() -> AuditEntry:
+    """The entry of a send that failed without sending anything, which releases its key (012, research R2)."""
+    return replace(unknown(), outcome={"status": "failed", "code": "provider_unavailable", "outcome_unknown": False})
 
 
 def as_entry(row: Any) -> AuditEntry:
@@ -143,6 +148,39 @@ async def test_an_unknown_outcome_whose_entry_cannot_be_written_leaves_the_key_i
     assert (record.state, record.response) == (KeyState.IN_PROGRESS, None)
 
 
+async def test_a_released_key_goes_away_with_the_entry_of_its_attempt_in_one_transaction(migrated: AsyncEngine) -> None:
+    """A failure that guarantees nothing was sent keeps nothing, and its attempt stays in the audit log (012, R2)."""
+    repository = SqlIdempotencyRepository(migrated)
+    await repository.reserve(CALLER, KEY, FINGERPRINT, unknown())
+    await repository.release(CALLER, KEY, failed())
+    assert await repository.find(CALLER, KEY) is None
+    assert await rows(migrated, "SELECT key FROM idempotency_keys") == []
+    assert [as_entry(row) for row in await audit_rows(migrated)] == [failed()]
+
+
+async def test_a_release_whose_entry_cannot_be_written_leaves_the_key_in_progress(migrated: AsyncEngine) -> None:
+    repository = SqlIdempotencyRepository(migrated)
+    await repository.reserve(CALLER, KEY, FINGERPRINT, unknown())
+    await refuse_audit_entries(migrated)
+    with pytest.raises(DBAPIError):
+        await repository.release(CALLER, KEY, failed())
+    record = await repository.find(CALLER, KEY)
+    assert record is not None
+    assert (record.state, record.response) == (KeyState.IN_PROGRESS, None)
+
+
+async def test_a_release_leaves_the_same_key_of_another_caller(migrated: AsyncEngine) -> None:
+    repository = SqlIdempotencyRepository(migrated)
+    other = "spiffe://cerbero.test/tenaro"
+    await repository.reserve(CALLER, KEY, FINGERPRINT, unknown())
+    await repository.reserve(other, KEY, b"\x02" * 32, unknown())
+    await repository.release(CALLER, KEY, failed())
+    assert await repository.find(CALLER, KEY) is None
+    kept = await repository.find(other, KEY)
+    assert kept is not None
+    assert kept.state is KeyState.IN_PROGRESS
+
+
 async def test_the_key_belongs_to_its_caller(migrated: AsyncEngine) -> None:
     repository = SqlIdempotencyRepository(migrated)
     await repository.reserve(CALLER, KEY, FINGERPRINT, unknown())
@@ -203,6 +241,7 @@ async def test_a_database_that_does_not_answer_is_unavailable() -> None:
             repository.reserve(CALLER, KEY, FINGERPRINT, unknown()),
             repository.complete(CALLER, KEY, RESPONSE, entry()),
             repository.complete_unknown(CALLER, KEY, UNKNOWN),
+            repository.release(CALLER, KEY, failed()),
             repository.purge(START),
         ):
             with pytest.raises(HermesError) as raised:
