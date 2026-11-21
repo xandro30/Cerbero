@@ -247,6 +247,12 @@ class IdempotencyRepository(Protocol):
         """The row `completed` with its response, in the same transaction as the audit entry of the send."""
         ...
 
+    async def release(self, caller: str, key: str, audit: AuditEntry) -> None:
+        """The row `in_progress` goes away, in the same transaction as the audit entry of the attempt: a send that
+        failed without sending anything keeps nothing, and the next request with the key is a new one (research R2
+        of 012). If the entry cannot be written, the row stays."""
+        ...
+
     async def complete_unknown(self, caller: str, key: str, response: StoredResponse) -> None:
         """A row left `in_progress` by a cut, `completed` with the response of an unknown outcome, in the same
         transaction as the entry that its reservation kept (FR-029)."""

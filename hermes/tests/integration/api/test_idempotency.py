@@ -1,4 +1,6 @@
-"""The send with its Idempotency-Key (T090, research R11, FR-016, SC-003): repeating a request never sends twice."""
+"""The send with its Idempotency-Key (T090, research R11, FR-016, SC-003): repeating a request never sends twice; after
+a failure without send, the repetition with the same key reaches the provider, and an unexpected failure while sending
+is an unknown outcome (T013, T014 and T018 of 012)."""
 
 import asyncio
 from collections.abc import AsyncIterator
@@ -52,17 +54,24 @@ class Callers:
 
 
 class CutKeys(MemoryIdempotency):
-    """The keys in memory, where a cut can stop the record of the next send after the provider."""
+    """The keys in memory, where a cut can stop the record or the release of the next send after the provider."""
 
     def __init__(self, audit: MemoryAudit) -> None:
         super().__init__(audit)
         self.cut_next = False
 
-    async def complete(self, caller: str, key: str, response: StoredResponse, audit: AuditEntry) -> None:
+    def _cut(self) -> None:
         if self.cut_next:
             self.cut_next = False
             raise HermesError(ErrorCode.UNAVAILABLE, "the database does not answer")
+
+    async def complete(self, caller: str, key: str, response: StoredResponse, audit: AuditEntry) -> None:
+        self._cut()
         await super().complete(caller, key, response, audit)
+
+    async def release(self, caller: str, key: str, audit: AuditEntry) -> None:
+        self._cut()
+        await super().release(caller, key, audit)
 
 
 class Api:
@@ -266,15 +275,142 @@ async def test_a_request_that_fails_before_the_provider_leaves_no_key_and_can_be
     assert len(api.fake.sent()) == 1
 
 
-async def test_a_failure_of_the_provider_is_the_response_of_its_key(api: Api, client: httpx.AsyncClient) -> None:
-    api.fake.fail_next(FakeFailure.RECIPIENT_REFUSES)
+async def test_after_a_failure_without_send_the_repetition_with_the_same_key_sends_once(
+    api: Api, client: httpx.AsyncClient
+) -> None:
+    """The retry of Hades after `provider_unavailable` with `retryable` (story 1 of 012, SC-001)."""
+    api.fake.fail_next(FakeFailure.UNREACHABLE, times=20)
+    first = await post(client)
+    assert first.status_code == 200
+    error = checked(first)["error"]
+    assert (error["code"], error["retryable"]) == ("provider_unavailable", True)
+    assert api.row() is None
+    api.fake.clear_failures()
+    again = await post(client)
+    assert again.status_code == 200
+    assert checked(again)["status"] == "completed"
+    assert len(api.fake.sent()) == 1
+    assert len(api.audit.entries) == 2
+    once_more = await post(client)
+    assert without_timing(checked(once_more)) == without_timing(checked(again))
+    assert len(api.fake.sent()) == 1
+    assert len(api.audit.entries) == 2
+
+
+async def test_after_a_limit_longer_than_the_function_the_repetition_with_the_same_key_sends(
+    api: Api, client: httpx.AsyncClient
+) -> None:
+    api.fake.fail_next(FakeFailure.RATE_LIMITED)
+    first = await post(client)
+    assert first.status_code == 200
+    error = checked(first)["error"]
+    assert (error["code"], error["retry_after_s"]) == ("rate_limited", 60)
+    assert api.row() is None
+    again = await post(client)
+    assert checked(again)["status"] == "completed"
+    assert len(api.fake.sent()) == 1
+    assert len(api.audit.entries) == 2
+
+
+async def test_a_retry_that_ends_in_a_cut_after_a_failure_without_send_keeps_its_unknown_outcome(
+    api: Api, client: httpx.AsyncClient
+) -> None:
+    api.fake.fail_next(FakeFailure.UNREACHABLE, times=20)
+    assert checked(await post(client))["error"]["code"] == "provider_unavailable"
+    api.fake.clear_failures()
+    api.fake.fail_next(FakeFailure.CUT_AFTER_SEND)
+    retried = await post(client)
+    error = checked(retried)["error"]
+    assert (error["code"], error["outcome_unknown"]) == ("timeout", True)
+    again = await post(client)
+    assert without_timing(checked(again)) == without_timing(checked(retried))
+    assert len(api.fake.sent()) == 1
+    row = api.row()
+    assert row is not None
+    assert row.state is KeyState.COMPLETED
+
+
+async def test_a_release_that_cannot_be_written_leaves_the_key_in_progress_and_the_repetition_unknown(
+    api: Api, client: httpx.AsyncClient
+) -> None:
+    """The database fails when the key should go away: the repetition cannot know, so it answers the unknown outcome
+    without calling the provider (012, research R2). Before the release existed, the cut fell on the record."""
+    api.fake.fail_next(FakeFailure.UNREACHABLE, times=20)
+    api.keys.cut_next = True
+    first = await post(client)
+    assert first.status_code == 503
+    assert checked(first)["error"]["code"] == "unavailable"
+    api.fake.clear_failures()
+    again = await post(client)
+    error = checked(again)["error"]
+    assert (error["code"], error["outcome_unknown"]) == ("timeout", True)
+    assert api.fake.sent() == []
+
+
+FIXABLE = [(FakeFailure.CREDENTIALS_REJECTED, "provider_unavailable"), (FakeFailure.RECIPIENT_REFUSES, "conflict")]
+
+
+@pytest.mark.parametrize(("failure", "code"), FIXABLE)
+async def test_after_fixing_the_cause_of_a_failure_without_send_the_repetition_with_the_same_key_sends(
+    api: Api, client: httpx.AsyncClient, failure: FakeFailure, code: str
+) -> None:
+    """The step relaunched once the admin fixes the cause (story 2 of 012, SC-002)."""
+    api.fake.fail_next(failure)
+    first = await post(client)
+    assert first.status_code == 200
+    assert checked(first)["error"]["code"] == code
+    assert api.row() is None
+    again = await post(client)
+    assert checked(again)["status"] == "completed"
+    assert len(api.fake.sent()) == 1
+    assert len(api.audit.entries) == 2
+
+
+@pytest.mark.parametrize(("failure", "code"), FIXABLE)
+async def test_without_fixing_the_cause_the_repetition_reaches_the_provider_and_fails_again(
+    api: Api, client: httpx.AsyncClient, failure: FakeFailure, code: str
+) -> None:
+    api.fake.fail_next(failure, times=2)
     first = await post(client)
     again = await post(client)
-    assert (first.status_code, again.status_code) == (200, 200)
-    assert checked(again)["error"]["code"] == "conflict"
+    assert checked(again)["error"]["code"] == code
     assert without_timing(again.json()) == without_timing(first.json())
     assert api.fake.sent() == []
+    assert len(api.audit.entries) == 2
+
+
+async def test_an_unexpected_failure_while_sending_is_an_unknown_outcome_that_the_key_keeps(
+    api: Api, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Story 3, scenario 4 of 012: Hermes does not know whether the message left, so it answers 200 with timeout and
+    outcome_unknown, and the repetition gives the same without calling the provider (research R3)."""
+    calls: list[object] = []
+
+    async def unexpected(delivery: object) -> object:
+        calls.append(delivery)
+        raise RuntimeError("an unexpected failure of the library of the provider")
+
+    monkeypatch.setattr(api.fake, "send", unexpected)
+    first = await post(client)
+    assert first.status_code == 200
+    error = checked(first)["error"]
+    assert (error["code"], error["retryable"], error["outcome_unknown"]) == ("timeout", False, True)
+    again = await post(client)
+    assert again.status_code == 200
+    assert without_timing(checked(again)) == without_timing(checked(first))
+    assert len(calls) == 1
     assert len(api.audit.entries) == 1
+
+
+async def test_after_a_failure_without_send_the_same_key_with_another_body_is_a_new_request(
+    api: Api, client: httpx.AsyncClient
+) -> None:
+    api.fake.fail_next(FakeFailure.CREDENTIALS_REJECTED)
+    assert checked(await post(client))["error"]["code"] == "provider_unavailable"
+    response = await post(client, {**BODY, "data": {**DATA, "ip": "192.168.1.99"}})
+    assert response.status_code == 200
+    assert checked(response)["status"] == "completed"
+    assert len(api.fake.sent()) == 1
 
 
 async def test_an_instance_at_its_limit_answers_429_with_retry_after_before_the_provider() -> None:

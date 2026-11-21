@@ -138,5 +138,6 @@ validación:
 | [005-hecate-rust](../specs/005-hecate-rust/) | El port de Hécate a Rust, con el comportamiento de la 001 y la 002 |
 | [006-hecate-access-policy](../specs/006-hecate-access-policy/) | La Access Policy, la resolución por la API y el estado agregado |
 | [007-hecate-reference](../specs/007-hecate-reference/) | Esta documentación |
+| [009-app-access](../specs/009-app-access/) | La lista de acceso de cada app: guardada en Hécate, gestionada con su CLI y leída por cada app por la API |
 
 Las specs son el registro de su fecha y no se modifican; el diseño vigente está en [docs/hecate.md](../docs/hecate.md).

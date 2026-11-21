@@ -125,6 +125,19 @@ deniega lo demás.
 | El acceso es a la app entera, sin reglas por ruta ni por método | Hermes no tiene funciones peligrosas entre sí ([ADR 0013](docs/adr/0013-acceso-por-app.md)); si una app las necesita, se añaden a la lista sin cambiar el token. |
 | Una retirada vale cuando la app refresca su copia, como mucho a los 240 s (en Istio, el plano de control empuja el cambio a los proxies); una concesión, en la llamada siguiente, porque la app vuelve a pedir la lista ante quien no está | Hécate nunca llama a nadie, y la copia es lo que deja a la app seguir con Hécate sellada o caída, como la lista de revocación y las claves publicadas. |
 
+### La clave de idempotencia de Hermes frente a Stripe y al borrador de la IETF
+
+SecOps SOAR no tiene clave de idempotencia en sus acciones. La referencia es la idempotencia de Stripe: guarda la
+respuesta de una petición que empezó a ejecutarse, también un 500, que pide tratar como indeterminado, y no la de una
+que no llegó a ejecutarse. Hermes sigue ese criterio con el proveedor en el lugar de la ejecución
+([ADR 0014](docs/adr/0014-clave-de-idempotencia-hermes.md)). El borrador de la IETF de la cabecera `Idempotency-Key`
+deja a cada servicio qué guarda la clave, y Hermes se aparta de él en dos cosas:
+
+| Desviación | Justificación |
+|---|---|
+| La misma clave con otro cuerpo responde `conflict` con 409 (el borrador: 422) | Las APIs internas comparten un conjunto cerrado de códigos de error, sin 422 (principio II), y Hécate responde lo mismo. |
+| Una repetición que llega con la primera en curso la espera y recibe su respuesta (el borrador: 409) | Hermes es una sola instancia y le basta un bloqueo en memoria por clave: cien peticiones iguales a la vez envían un mensaje, y quien llama no tiene que repetir tras un conflicto. |
+
 ### Riesgos aceptados
 
 | Riesgo | Por qué se acepta |
@@ -157,6 +170,7 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 | APIs internas en Python y certificado del cliente: Hermes detrás de Envoy, que reenvía el certificado del cliente; FastAPI, SQLAlchemy Core con Alembic y httpx | [0011](docs/adr/0011-pila-hermes.md) |
 | Persistencia de las apps: un PostgreSQL común, con una base y un usuario por app; Hécate sigue en SQLite | [0012](docs/adr/0012-persistencia-postgresql-comun.md) |
 | Acceso por app: Hécate guarda qué identidades pueden llamar a cada app; el token corto no concede acceso | [0013](docs/adr/0013-acceso-por-app.md) |
+| Lo que guarda la clave de idempotencia de Hermes: lo que se envió o pudo enviarse; un fallo que garantiza que no se envió nada la deja libre | [0014](docs/adr/0014-clave-de-idempotencia-hermes.md) |
 
 ---
 
@@ -208,7 +222,6 @@ Las decisiones de tecnología y organización se documentan como ADR en [docs/ad
 | `chat.ask` | Diseñado, no implementado: preguntar con opciones cerradas a uno o varios contactos y que gane la primera respuesta válida, como task; falta su clasificación (consulta con `side_effect`) y el comportamiento con cada proveedor, y el texto libre ([hermes](docs/hermes/comunicacion.md#preguntar-con-opciones-cerradas-chatask)). |
 | Tasks de Hermes | Diseñado, no implementado: peticiones asíncronas event-sourced que Hades envía, consulta y cancela por API, con su cola sobre la base de Hermes; las necesitan `chat.ask` y las funciones en modo task ([hermes](docs/hermes/llamadas.md#la-task)). |
 | Grupos de contactos | Diseñado, no implementado: un grupo con miembros y entrega `shared_chat` o `fan_out`; hoy `chat.send_message` va a un solo contacto por petición, y el contrato ya recibe una lista ([hermes](docs/hermes/comunicacion.md#los-contactos-y-sus-canales)). |
-| Reintento de Hades tras un fallo reintentable de Hermes | Hades deriva la clave de idempotencia del paso y su input y reintenta un bloque si el sobre dice `retryable`; Hermes guarda en la clave toda respuesta que llegó al proveedor, también un fallo reintentable, así que el reintento con la misma clave recibe el fallo guardado. Falta decidir si Hermes no guarda los fallos que garantizan que no se envió nada o si Hades cambia la clave en cada intento ([integración](docs/hermes/integracion.md#la-idempotency-key)). |
 | Permisos por rol | Hoy hay un único rol privilegiado, el admin (Hécate, identidades, invitaciones); owner y maintainer salen de las definiciones. Falta la capa de permisos para el resto. |
 | `signal` en otros destinos | Solo `hades.signal` tiene uso; en los demás, cuando su contrato publique señales. |
 | Adapter de hardware de Hécate | TPM o YubiKey detrás del `CryptoProvider`: desbloqueo automático y claves que no salen del dispositivo. |

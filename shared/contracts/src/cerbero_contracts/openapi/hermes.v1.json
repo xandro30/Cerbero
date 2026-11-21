@@ -2,9 +2,9 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Cerbero Hermes API",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "summary": "The API of Hermes between Cerbero components: chat.send_message, the capabilities and the connection test of an instance.",
-    "description": "Every operation needs the client certificate of a Cerbero component, forwarded by the TLS proxy, and a short call token in Authorization, as the integration guide of Hécate fixes, with aud equal to the SPIFFE ID of Hermes. A failure of a provider travels inside the envelope with HTTP 200; a failure before reaching the provider carries the HTTP status of its code. The health of Hermes is not in this API: it goes through its local administration channel.",
+    "description": "Every operation needs the client certificate of a Cerbero component, forwarded by the TLS proxy, and a short call token in Authorization, as the integration guide of Hécate fixes, with aud equal to the SPIFFE ID of Hermes and, in its header, the kid of the caller's call signing key. A failure while sending, from the provider or with an unknown outcome, travels inside the envelope with HTTP 200; a failure before reaching the provider carries the HTTP status of its code. The health of Hermes is not in this API: it goes through its local administration channel.",
     "license": {
       "name": "AGPL-3.0-or-later",
       "identifier": "AGPL-3.0-or-later"
@@ -50,7 +50,7 @@
         },
         "responses": {
           "200": {
-            "description": "Sent, or the provider failed: its failure goes inside the envelope.",
+            "description": "Sent, or the send failed once it reached the provider: the failure goes inside the envelope. A timeout with outcome_unknown, also after an unexpected failure while calling the provider, means the message may have arrived.",
             "content": {
               "application/json": {
                 "schema": {
@@ -168,7 +168,7 @@
             }
           },
           "409": {
-            "description": "The channel is not verified, or the Idempotency-Key was used with another request.",
+            "description": "The channel is not verified, or the Idempotency-Key is kept for another request.",
             "content": {
               "application/json": {
                 "schema": {
@@ -227,7 +227,7 @@
             }
           },
           "500": {
-            "description": "An unexpected failure, or a secret past its hard cache time.",
+            "description": "An unexpected failure before reaching the provider, or a secret past its hard cache time.",
             "content": {
               "application/json": {
                 "schema": {
@@ -584,7 +584,7 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "JWT",
-        "description": "A short call token (EdDSA, 300 s at most, single-use jti) signed by the caller, with iss equal to the SPIFFE ID of its certificate and aud equal to the SPIFFE ID of Hermes. It may carry cerbero_audit: an object of up to 16 text keys (1 to 64 characters) with text values (up to 256), 2 KiB at most."
+        "description": "A short call token (EdDSA, 300 s at most, single-use jti) signed by the caller. Its header carries alg EdDSA, typ JWT and kid, the id of the call signing key that Hécate gave the caller with its certificate; a token without kid answers auth. Its iss is the SPIFFE ID of the certificate of the connection and its aud, the SPIFFE ID of Hermes. It may carry cerbero_audit: an object of up to 16 text keys (1 to 64 characters) with text values (up to 256), 2 KiB at most."
       }
     },
     "parameters": {
@@ -592,6 +592,7 @@
         "name": "Idempotency-Key",
         "in": "header",
         "required": true,
+        "description": "One per send, chosen by the caller and kept with its identity for 24 hours. The key keeps the response of what was sent or may have been sent: a completed send, or a timeout with outcome_unknown. A repetition with the same key and body gives that response back without sending again, and, while the key is kept, the same key with another body is conflict. A failure that guarantees nothing was sent, like one before reaching the provider, keeps nothing: the next request with that key is a new attempt.",
         "schema": {
           "$ref": "#/components/schemas/IdempotencyKey"
         }

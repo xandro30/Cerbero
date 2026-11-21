@@ -4,8 +4,11 @@
 the channel is verified, without calling the provider. `execute` takes a token of the limit of the instance, resolves
 its secrets, draws the message and sends it; each send that reaches the provider leaves its audit entry, completed or
 failed (FR-029). `execute_once` does the same with the row of its `Idempotency-Key`: reserved right before the
-provider with the entry of an unknown outcome, written if a cut leaves the send without its record, and completed with
-the response and the audit entry in one transaction (research R11).
+provider with the entry of an unknown outcome, written if a cut leaves the send without its record; completed with
+what was sent or may have been sent, its response and its audit entry in one transaction (research R11); and released
+with its audit entry after a failure that guarantees nothing was sent, which is raised like a failure before the
+provider (research R2 of 012). An unexpected failure while calling the provider is an unknown outcome: Hermes does not
+know whether the message left (research R3 of 012).
 """
 
 from __future__ import annotations
@@ -37,13 +40,13 @@ from hermes.domain.idempotency.record import StoredResponse
 from hermes.domain.messages.neutral import NeutralMessage, compose
 from hermes.domain.services.chat.channels import choose_channel
 from hermes.domain.services.chat.contract import SEND_MESSAGE, SERVICE, SendRequest, resolve_template
-from hermes.domain.services.chat.provider import ChatProvider, ChatProviders, Delivery
+from hermes.domain.services.chat.provider import ChatProvider, ChatProviders, Delivery, ProviderFailure
 from hermes.domain.shared.clock import Clock
 from hermes.domain.shared.errors import ErrorCode, HermesError
 
 COMPLETED: Mapping[str, Any] = {"status": "completed", "code": None, "outcome_unknown": False}
 UNKNOWN: Mapping[str, Any] = {"status": "failed", "code": ErrorCode.TIMEOUT.value, "outcome_unknown": True}
-UNEXPECTED = "an unexpected failure"
+UNEXPECTED_WHILE_SENDING = "an unexpected failure while sending: the message may have arrived"
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +126,9 @@ class _Reserved:
         await self._reservation.reserve(unknown)
 
     async def after_send(self, outcome: SendResult | HermesError, entry: AuditEntry) -> None:
+        if isinstance(outcome, HermesError) and not outcome.outcome_unknown:
+            await self._reservation.release(entry)
+            return
         await self._reservation.complete(self._render(outcome), entry)
 
 
@@ -189,7 +195,8 @@ class SendMessage:
         return await self._execute(prepared, _Audited(self._audit))
 
     async def execute_once(self, prepared: PreparedSend, reservation: Reservation, render: Render) -> StoredResponse:
-        """The response that the key keeps; a failure before the provider leaves no row and is raised."""
+        """The response that the key keeps: a completed send or an unknown outcome. A failure that guarantees nothing
+        was sent releases the key and is raised, like a failure before the provider, which leaves no row."""
         try:
             await self._execute(prepared, _Reserved(reservation, render))
         except Exception:
@@ -223,7 +230,9 @@ class SendMessage:
             raise
         except Exception as error:
             logger.error("send.failed", extra={"fields": {"exception": type(error).__name__}})
-            failure = HermesError(ErrorCode.INTERNAL, UNEXPECTED)
+            failure = ProviderFailure(
+                ErrorCode.TIMEOUT, UNEXPECTED_WHILE_SENDING, retryable=False, outcome_unknown=True
+            )
             await record.after_send(failure, self._entry(prepared, _failed(failure)))
             raise
         self._statuses.record_call(prepared.instance.name, None)

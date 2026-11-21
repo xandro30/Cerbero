@@ -76,17 +76,19 @@ Obligatoria en `POST /chat/v1/send_message`: de 1 a 128 caracteres ASCII imprimi
 otra forma, `validation`.
 
 - **Es de quien llama:** Hermes la guarda con su identidad, así que dos componentes pueden usar la misma sin chocar.
+- **La clave guarda lo que se envió o pudo enviarse:** un envío completado, o un `timeout` con `outcome_unknown`.
 - **Repetir la misma petición** (la misma clave con el mismo cuerpo, que se compara como JSON, sin importar el orden de
-  sus campos ni los espacios) devuelve la misma respuesta, con el `request_id` y la duración de la repetición, sin
-  volver a enviar; también si las dos llegan a la vez.
-- **La misma clave con otro cuerpo** responde `conflict`.
+  sus campos ni los espacios) devuelve esa respuesta, con el `request_id` y la duración de la repetición, sin volver a
+  enviar; también si las dos llegan a la vez.
+- **La misma clave con otro cuerpo** responde `conflict` mientras la clave guarda otra petición; tras un fallo sin
+  envío o antes del proveedor, es una petición nueva.
 - **Tras un corte** que dejó la petición a medias, la repetición responde `timeout` con `outcome_unknown: true`, sin
   volver a enviar: el mensaje puede haber llegado.
-- **Una petición que falla antes de llegar al proveedor** no deja la clave: se repite con la misma cuando se corrige la
-  causa (un contacto que faltaba, un canal sin verificar o el límite de la instancia).
-- **Una que llegó al proveedor** deja su respuesta en la clave, también si falló. Para reintentar un fallo `retryable`
-  del proveedor (un `provider_unavailable` o su `rate_limited`, que garantizan que no se envió nada), se usa otra
-  clave.
+- **Una petición que falla sin enviar nada no deja la clave:** la que falla antes de llegar al proveedor (un contacto
+  que faltaba, un canal sin verificar o el límite de la instancia) y la que el proveedor no llega a ejecutar (no
+  conecta, pide esperar más de lo que cabe, rechaza las credenciales o la petición, o la persona no admite el bot). Se
+  repite con la misma clave tras esperar lo que diga el error o tras corregir su causa, y cada intento que llega al
+  proveedor deja su entrada de auditoría.
 - **Hermes guarda cada clave 24 horas**; una repetición pasado ese tiempo es una petición nueva.
 - Si quien llama corta antes de recibir la respuesta, no sabe si el mensaje llegó: repite la misma petición con la
   misma clave. El diseño está en [llamadas](llamadas.md#la-idempotencia).
@@ -122,14 +124,14 @@ Toda respuesta va en el sobre común. Un envío completado:
 | `validation` | 400 | El cuerpo no es JSON estándar o pasa de 64 KiB, faltan o sobran campos, falta la `Idempotency-Key` o una cabecera no sigue su regla, `cerbero_audit` no sigue la suya, los datos no cumplen el esquema de la versión de la plantilla o un texto del mensaje no cumple su regla con ellos, el contacto tiene varios canales de chat y la petición no dice la instancia, o el nombre de la instancia que se prueba no es válido | No | Corregir la petición |
 | `auth` | 401 | El certificado o el token corto no valen, o quien llama no está en la lista de acceso de Hermes | No | Revisar sus credenciales y pedir al admin el acceso; si su certificado ya no vale, pedirle un token de alta nuevo |
 | `not_found` | 404 | La plantilla, la versión, la instancia o el contacto no existen, o el contacto no tiene canal en esa instancia; o la ruta o el método no son una operación | No | Revisar los nombres con el admin |
-| `conflict` | 409 | El canal del contacto no está verificado, o la `Idempotency-Key` ya se usó con otra petición | No | Pedir al admin que verifique el canal; usar otra clave para una petición distinta |
-| `conflict` | 200 | La persona no admite mensajes del bot | No | Avisar al admin: la persona tiene que volver a admitir los mensajes del bot |
+| `conflict` | 409 | El canal del contacto no está verificado, o la `Idempotency-Key` ya guarda otra petición | No | Pedir al admin que verifique el canal; usar otra clave para una petición distinta |
+| `conflict` | 200 | La persona no admite mensajes del bot | No | Avisar al admin: la persona tiene que volver a admitir los mensajes del bot; después, repetir con la misma clave |
 | `rate_limited` | 429, con `Retry-After` | La instancia agotó su límite de uso; la petición no llegó al proveedor | Sí | Esperar `retry_after_s` y repetir con la misma clave |
-| `rate_limited` | 200 | El proveedor pide esperar más de lo que cabe en el timeout de la función | Sí | Esperar `retry_after_s` y reintentar con otra clave |
-| `provider_unavailable` | 200 | El proveedor no responde o falla sin haber hecho nada, o rechaza la petición o las credenciales de la instancia | Según `retryable`: sí en el primer caso, no en el segundo | Con `retryable`, reintentar más tarde con otra clave; sin él, avisar al admin |
-| `timeout` | 200 | No se sabe si el mensaje llegó (`outcome_unknown`) | No | No reenviar sin más: con la misma clave recibe lo mismo, y con otra puede duplicar el mensaje |
+| `rate_limited` | 200 | El proveedor pide esperar más de lo que cabe en el timeout de la función | Sí | Esperar `retry_after_s` y repetir con la misma clave |
+| `provider_unavailable` | 200 | El proveedor no responde o falla sin haber hecho nada, o rechaza la petición o las credenciales de la instancia | Según `retryable`: sí en el primer caso, no en el segundo | Con `retryable`, reintentar más tarde con la misma clave; sin él, avisar al admin y, arreglada la causa, repetir con la misma clave |
+| `timeout` | 200 | No se sabe si el mensaje llegó (`outcome_unknown`), también tras un fallo inesperado de Hermes al llamar al proveedor | No | No reenviar sin más: con la misma clave recibe lo mismo, y con otra puede duplicar el mensaje |
 | `unavailable` | 503 | Hermes no está listo, su base no responde, o Hécate no responde cuando Hermes la necesita para autenticar (una clave de firma nueva, o la lista de acceso cuando quien llama no está en su copia) | Sí | Reintentar más tarde con la misma clave |
-| `internal` | 500 | Un fallo inesperado, o el secreto de la instancia pasado su tiempo duro (Hécate lleva más de una hora sin responder) | Sí | Reintentar más tarde con la misma clave |
+| `internal` | 500 | Un fallo inesperado antes de llegar al proveedor, o el secreto de la instancia pasado su tiempo duro (Hécate lleva más de una hora sin responder) | Sí | Reintentar más tarde con la misma clave |
 
 El orden en que Hermes hace estas comprobaciones está en [contratos](contratos.md#chatsend_message).
 

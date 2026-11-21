@@ -239,6 +239,27 @@ async def test_a_kid_without_the_form_of_a_thumbprint_is_refused_without_asking_
     assert world.asked == []
 
 
+async def test_a_token_without_kid_in_its_header_is_refused_without_asking_hecate(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """What hermes.v1.json 1.0.2 says: the header of the call token carries the kid (FR-007 of 012)."""
+    world = World()
+    caplog.set_level(logging.INFO, logger="hermes")
+    now = world.clock.now()
+    claims = {
+        "iss": spiffe("hades"),
+        "aud": HERMES,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(seconds=300)).timestamp()),
+        "jti": "a-token-without-kid",
+    }
+    token = jwt.encode(claims, world.key.private, algorithm="EdDSA", headers={"typ": "JWT"})
+    assert "kid" not in jwt.get_unverified_header(token)
+    await refused(world, world.credentials(token=token))
+    assert world.asked == []
+    assert reasons(caplog) == ["unknown_key"]
+
+
 async def test_the_key_is_asked_only_after_the_chain_is_valid() -> None:
     world = World()
     other = TestCa(now=world.clock.now())

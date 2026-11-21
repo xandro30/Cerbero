@@ -1,5 +1,7 @@
 """The keys of idempotency in their table (data-model.md#idempotency_keys, research R11): one row per caller and key,
-`in_progress` from right before the provider and `completed` with its response, together with the audit entry.
+`in_progress` from right before the provider and `completed` with what was sent or may have been sent, together with
+the audit entry. A send that failed without sending anything releases its row in the same transaction as its audit
+entry (research R2 of 012).
 
 While a row is `in_progress` it keeps the audit entry of its send with an unknown outcome: if a cut leaves the send
 without its record, the repetition or the purge writes that entry (FR-029).
@@ -121,6 +123,15 @@ class SqlIdempotencyRepository:
         try:
             async with self._engine.begin() as connection:
                 await connection.execute(statement)
+                await insert_entry(connection, audit)
+        except DATABASE_DOWN:
+            raise database_unavailable() from None
+
+    async def release(self, caller: str, key: str, audit: AuditEntry) -> None:
+        in_progress = self._key(caller, key) & (idempotency_keys.c.state == KeyState.IN_PROGRESS.value)
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(delete(idempotency_keys).where(in_progress))
                 await insert_entry(connection, audit)
         except DATABASE_DOWN:
             raise database_unavailable() from None

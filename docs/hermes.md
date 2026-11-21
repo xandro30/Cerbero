@@ -159,10 +159,15 @@ Resumen; el detalle y el porqué están en [DECISIONS](../DECISIONS.md#hermes-fr
 - **Frente a SecOps:** contratos estándar por tipología (en SecOps cada integración devuelve su propia salida); las
   librerías viven en un componente aparte, recomendado pero no obligatorio; integraciones de Hades que usan o extienden
   clases de Hermes en lugar de duplicarlas; `side_effect` y `discloses_data` descritos en cada contrato.
+- **La clave de idempotencia** (SecOps SOAR no la tiene): el criterio de Stripe, guardar solo lo que se envió o pudo
+  enviarse; frente al borrador de la IETF, otro cuerpo con la misma clave responde `conflict`, y una repetición con la
+  primera en curso la espera
+  ([DECISIONS](../DECISIONS.md#la-clave-de-idempotencia-de-hermes-frente-a-stripe-y-al-borrador-de-la-ietf)).
 - **Tomadas:** FastAPI detrás de Envoy, con la base en SQLAlchemy Core y Alembic
   ([ADR 0011](adr/0011-pila-hermes.md)); un PostgreSQL común con una base por app
   ([ADR 0012](adr/0012-persistencia-postgresql-comun.md)); el acceso por app en Hécate, sin permisos en el token
-  ([ADR 0013](adr/0013-acceso-por-app.md)).
+  ([ADR 0013](adr/0013-acceso-por-app.md)); lo que guarda la clave de idempotencia, solo lo que se envió o pudo
+  enviarse ([ADR 0014](adr/0014-clave-de-idempotencia-hermes.md)).
 - **Riesgos aceptados:** el token ligado a la identidad que declara el proxy, y los secretos en la memoria de Python,
   que no se pueden borrar ([seguridad](hermes/seguridad.md#lo-que-no-cubre-y-los-riesgos-aceptados)).
 - **Descartado:** Hermes como frontera obligatoria; payload nativo del proveedor en el Playbook; convertir modos;

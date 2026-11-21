@@ -1,13 +1,19 @@
-"""The use case chat.send_message (T032), with doubles of every port."""
+"""The use case chat.send_message (T032), with doubles of every port; with its key, what a failure releases and what
+it completes, and the unexpected failure while sending as an unknown outcome (T011, T012 and T017 of 012)."""
 
+import logging
 from datetime import timedelta
 from typing import Any
 
 import pytest
 
+from hermes.application import send_message
+from hermes.application.capabilities import InstanceStatuses
 from hermes.application.configuration import ConfigurationState
+from hermes.application.idempotency import Reservation
 from hermes.application.ports import AuditKind
-from hermes.application.send_message import SendMessage
+from hermes.application.send_message import SendMessage, SendResult
+from hermes.domain.idempotency.record import KeyRecord, KeyState, StoredResponse
 from hermes.domain.services.chat.contract import SendRequest
 from hermes.domain.services.chat.provider import ProviderFailure
 from hermes.domain.shared.errors import ErrorCode, HermesError
@@ -15,11 +21,32 @@ from hermes.domain.shared.secret import SecretValue
 from hermes.infrastructure.providers.registry import read_manifest
 from support.clock import FakeClock
 from support.configuration import BOT_TOKEN, BOT_TOKEN_REF, CHAT, DATA, LINK, TITLE_V1, configuration
-from support.doubles import CALLER, MemoryAudit, MemoryChannels, Providers, RecordingProvider, StaticSecrets
+from support.doubles import (
+    CALLER,
+    MemoryAudit,
+    MemoryChannels,
+    MemoryIdempotency,
+    Providers,
+    RecordingProvider,
+    StaticSecrets,
+)
 
 pytestmark = pytest.mark.anyio
 
 KEY = "case-1234-notify"
+FINGERPRINT = b"\x01" * 32
+
+
+class CountedStatuses(InstanceStatuses):
+    """The states of the instances, keeping each call that counts in them."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[HermesError | None] = []
+
+    def record_call(self, instance: str, failure: HermesError | None) -> None:
+        self.calls.append(failure)
+        super().record_call(instance, failure)
 
 
 class World:
@@ -28,9 +55,12 @@ class World:
         self.channels = MemoryChannels()
         self.channels.verify("contacto_demo", "telegram", "family_bot", CHAT)
         self.audit = MemoryAudit()
+        self.keys = MemoryIdempotency(self.audit)
+        self.rendered: list[SendResult | HermesError] = []
         self.secrets = StaticSecrets({BOT_TOKEN_REF: BOT_TOKEN})
         self.provider = RecordingProvider(read_manifest("telegram"), provider_failure)
         self.state = ConfigurationState(configuration())
+        self.statuses = CountedStatuses()
         self.use_case = SendMessage(
             configuration=self.state,
             channels=self.channels,
@@ -38,7 +68,23 @@ class World:
             secrets=self.secrets,
             audit=self.audit,
             clock=self.clock,
+            statuses=self.statuses,
         )
+
+    def render(self, outcome: SendResult | HermesError) -> StoredResponse:
+        """A render that keeps the outcome it receives; the route draws the real envelope (research R8 of 012)."""
+        self.rendered.append(outcome)
+        return StoredResponse(200, {"status": "completed" if isinstance(outcome, SendResult) else "failed"})
+
+    async def send_once(self) -> StoredResponse:
+        """The send with its `Idempotency-Key`, as the route runs it (research R2 of 012)."""
+        prepared = await self.use_case.prepare(CALLER, request(), KEY)
+        reservation = Reservation(self.keys, str(CALLER.spiffe_id), KEY, FINGERPRINT)
+        return await self.use_case.execute_once(prepared, reservation, self.render)
+
+    def row(self) -> KeyRecord | None:
+        found = self.keys.rows.get((str(CALLER.spiffe_id), KEY))
+        return found[0] if found is not None else None
 
 
 def request(**overrides: Any) -> SendRequest:
@@ -231,4 +277,121 @@ async def test_an_unexpected_failure_while_sending_is_audited_too() -> None:
     with pytest.raises(RuntimeError):
         await world.use_case.send(CALLER, request(), KEY)
     [entry] = world.audit.entries
-    assert entry.outcome == {"status": "failed", "code": "internal", "outcome_unknown": False}
+    assert entry.outcome == {"status": "failed", "code": "timeout", "outcome_unknown": True}
+
+
+# --- With its Idempotency-Key (012) ---------------------------------------------------------------------------------
+
+RETRYABLE_WITHOUT_SEND = [
+    ProviderFailure(ErrorCode.PROVIDER_UNAVAILABLE, "telegram did not answer in the time of the function"),
+    ProviderFailure(
+        ErrorCode.RATE_LIMITED,
+        "telegram limits the instance for longer than the time of the function",
+        retry_after_s=60,
+    ),
+]
+
+FIXABLE_WITHOUT_SEND = [
+    ProviderFailure(
+        ErrorCode.PROVIDER_UNAVAILABLE,
+        "telegram does not accept the credentials of the instance",
+        retryable=False,
+        credentials_rejected=True,
+    ),
+    ProviderFailure(ErrorCode.PROVIDER_UNAVAILABLE, "telegram refuses the request", retryable=False),
+    ProviderFailure(ErrorCode.CONFLICT, "the person does not accept messages from the bot", retryable=False),
+    HermesError(ErrorCode.INTERNAL, "the instance has no token of its bot"),
+]
+
+
+@pytest.mark.parametrize("failure", RETRYABLE_WITHOUT_SEND, ids=["unreachable", "rate_limited"])
+async def test_a_retryable_failure_without_send_releases_the_key_with_its_audit_entry(failure: HermesError) -> None:
+    """The retry of Hades with the same key reaches the provider (FR-001, FR-002, FR-005 of 012)."""
+    world = World(provider_failure=failure)
+    with pytest.raises(HermesError) as raised:
+        await world.send_once()
+    assert raised.value is failure
+    assert world.row() is None
+    [entry] = world.audit.entries
+    assert entry.outcome == {"status": "failed", "code": failure.code.value, "outcome_unknown": False}
+
+
+@pytest.mark.parametrize(
+    "failure",
+    FIXABLE_WITHOUT_SEND,
+    ids=["credentials_rejected", "request_refused", "recipient_refuses", "internal_before_sending"],
+)
+async def test_a_failure_without_send_whose_cause_needs_fixing_releases_the_key_too(failure: HermesError) -> None:
+    """Once the admin fixes the cause, relaunching the step with the same input reaches the provider (FR-002, FR-003
+    of 012)."""
+    world = World(provider_failure=failure)
+    with pytest.raises(HermesError) as raised:
+        await world.send_once()
+    assert raised.value is failure
+    assert world.row() is None
+    [entry] = world.audit.entries
+    assert entry.outcome == {"status": "failed", "code": failure.code.value, "outcome_unknown": False}
+
+
+async def test_a_completed_send_completes_the_key_with_its_response() -> None:
+    world = World()
+    response = await world.send_once()
+    row = world.row()
+    assert row is not None
+    assert (row.state, row.response) == (KeyState.COMPLETED, response)
+    [outcome] = world.rendered
+    assert isinstance(outcome, SendResult)
+
+
+async def test_a_send_with_an_unknown_outcome_completes_the_key_with_its_response() -> None:
+    failure = ProviderFailure(
+        ErrorCode.TIMEOUT, "the answer was lost after sending", retryable=False, outcome_unknown=True
+    )
+    world = World(provider_failure=failure)
+    response = await world.send_once()
+    row = world.row()
+    assert row is not None
+    assert (row.state, row.response) == (KeyState.COMPLETED, response)
+    assert world.rendered == [failure]
+
+
+async def test_an_unexpected_failure_while_sending_completes_the_key_with_an_unknown_outcome(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Hermes does not know whether the message left: the key keeps a timeout with outcome_unknown, which the route
+    answers with HTTP 200 (FR-004 of 012, research R3)."""
+    world = World(provider_failure=RuntimeError("boom"))
+    caplog.set_level(logging.ERROR, logger="hermes")
+    response = await world.send_once()
+    row = world.row()
+    assert row is not None
+    assert (row.state, row.response) == (KeyState.COMPLETED, response)
+    [failure] = world.rendered
+    assert isinstance(failure, ProviderFailure)
+    assert (failure.code, failure.from_provider, failure.retryable, failure.outcome_unknown) == (
+        ErrorCode.TIMEOUT,
+        True,
+        False,
+        True,
+    )
+    assert failure.message == send_message.UNEXPECTED_WHILE_SENDING
+    [entry] = world.audit.entries
+    assert entry.outcome == {"status": "failed", "code": "timeout", "outcome_unknown": True}
+    logged = [getattr(record, "fields", {}) for record in caplog.records if record.msg == "send.failed"]
+    assert logged == [{"exception": "RuntimeError"}]
+    assert world.statuses.calls == []
+
+
+async def test_an_unexpected_failure_before_the_key_is_reserved_leaves_no_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    """It does not reach the provider, so it is raised and the key stays free (research R3 of 012)."""
+    world = World()
+
+    async def broken(reference: object) -> SecretValue:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(world.secrets, "resolve", broken)
+    with pytest.raises(RuntimeError):
+        await world.send_once()
+    assert world.row() is None
+    assert world.provider.deliveries == []
+    assert world.audit.entries == []

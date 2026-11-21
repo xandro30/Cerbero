@@ -1,9 +1,10 @@
 """`POST /chat/v1/send_message`, the operation of the chat service type (contracts/api.md).
 
 The order of its checks: Hermes ready and the caller (the dependency `authenticated`), the `Idempotency-Key` and the
-body, its key (research R11), and then the use case. The response that reaches the provider is the one its key keeps,
-and each repetition gives it back with its own `request_id` and duration. Until `install_chat` gives the route its
-services, it answers `unavailable`.
+body, its key (research R11), and then the use case. The key keeps the response of what was sent or may have been
+sent, and each repetition gives it back with its own `request_id` and duration; a failure that guarantees nothing was
+sent keeps nothing, and the route answers it like a failure before the provider (research R2 of 012). Until
+`install_chat` gives the route its services, it answers `unavailable`.
 """
 
 from __future__ import annotations

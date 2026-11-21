@@ -230,7 +230,7 @@ paths:
 ### Relanzar, idempotencia y compensación
 
 - **Relanzar** desde el paso fallido con la misma versión fijada, o entera. El input se puede cambiar; la edición queda como evento con `by`.
-- **Idempotencia:** los bloques con efecto externo usan la clave `response_id + paso + hash(input resuelto)`. Con el mismo input, un reintento no duplica el efecto; con el input cambiado, es un efecto nuevo e intencionado. Quien ejecuta el efecto (Estigia, Hermes) guarda y comprueba la clave.
+- **Idempotencia:** los bloques con efecto externo usan la clave `response_id + paso + hash(input resuelto)`, así que un reintento o un relanzamiento con el mismo input usa la misma clave. Con el mismo input, un reintento no duplica el efecto; con el input cambiado, es un efecto nuevo e intencionado. Quien ejecuta el efecto (Estigia, Hermes) guarda y comprueba la clave; en Hermes, la clave solo guarda lo que se envió o pudo enviarse, así que un reintento tras un fallo sin envío llega al proveedor ([llamadas de Hermes](hermes/llamadas.md#la-idempotencia)).
 - **Compensación (saga):** cada bloque con efecto declara su acción inversa o que no es reversible (un mensaje enviado). Se lanza al pedir "revertir" o con `VerdictCorrected` y queda registrada como un cambio añadido.
 
 ### Errores y SLA

@@ -17,6 +17,7 @@ Una decisión significativa por fichero (`NNNN-titulo.md`). Las decisiones abier
 | [0011](0011-pila-hermes.md) | Pila de Hermes: FastAPI detrás de Envoy | Aceptada |
 | [0012](0012-persistencia-postgresql-comun.md) | Persistencia de las apps en un PostgreSQL común | Aceptada |
 | [0013](0013-acceso-por-app.md) | Acceso por app guardado en Hécate | Aceptada |
+| [0014](0014-clave-de-idempotencia-hermes.md) | Lo que guarda la clave de idempotencia de Hermes | Aceptada |
 
 ## Plantilla
 
